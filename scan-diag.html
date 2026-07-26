@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>扫码能力诊断</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:#0f1115;color:#e6e6e6;padding:14px;line-height:1.5}
+  .card{background:#1a1d24;border:1px solid #2a2f3a;border-radius:14px;padding:16px;max-width:560px;margin:0 auto}
+  h2{font-size:18px;margin-bottom:12px;color:#fff}
+  .row{background:#232733;border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-all}
+  .ok{border-left:4px solid #3ad07a}
+  .bad{border-left:4px solid #ff5d5d}
+  .warn{border-left:4px solid #ffb020}
+  button{width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:600;
+          background:#3a7afe;color:#fff;margin:10px 0;cursor:pointer}
+  button:active{opacity:.85}
+  video{width:100%;border-radius:12px;background:#000;display:none;aspect-ratio:4/3;object-fit:cover}
+  #stats{display:none;font-size:13px;color:#9aa3b2;margin:8px 0}
+  #stats b{color:#fff}
+  #log{margin-top:10px;font-size:13px}
+  #log div{padding:6px 0;border-bottom:1px solid #232733;word-break:break-all}
+  .tip{font-size:12px;color:#8b93a3;margin-top:10px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>📷 扫码能力诊断</h2>
+  <div id="bd" class="row">BarcodeDetector：检测中…</div>
+  <div id="fmts" class="row">支持的格式：检测中…</div>
+  <div id="cam" class="row">摄像头 API：检测中…</div>
+  <button id="start">开启摄像头测试</button>
+  <video id="v" playsinline muted></video>
+  <div id="stats">
+    FPS：<b id="fps">0</b> ｜ 识别次数：<b id="cnt">0</b> ｜ 上次耗时：<b id="ms">0</b> ms
+  </div>
+  <div id="log"></div>
+  <div class="tip">
+    说明：本页纯跑在你手机浏览器里，不依赖 N1。它能直接告诉我们——夸克到底有没有原生扫码引擎。<br>
+    若显示「❌ 不支持 BarcodeDetector」，就证实了一维码扫不上是引擎问题，不是 N1。
+  </div>
+</div>
+<script>
+  const $ = id => document.getElementById(id);
+  const log = s => { const d=document.createElement('div'); d.textContent=s; $('log').prepend(d); };
+
+  (async () => {
+    const hasBD = ('BarcodeDetector' in window);
+    $('bd').textContent = 'BarcodeDetector：' + (hasBD ? '✅ 支持（有原生引擎）' : '❌ 不支持（只能用弱软解）');
+    $('bd').className = 'row ' + (hasBD ? 'ok' : 'bad');
+
+    if (hasBD) {
+      try {
+        const f = await BarcodeDetector.getSupportedFormats();
+        const want = ['ean_13','ean_8','upc_a','upc_e','code_128'];
+        const got = f.filter(x => want.includes(x));
+        $('fmts').textContent = '支持的格式：' + f.join('、');
+        if (got.length === 0) {
+          $('fmts').className = 'row warn';
+          $('fmts').textContent += '（⚠️ 不含常见一维码格式，一维码仍扫不上）';
+        }
+      } catch(e) {
+        $('fmts').textContent = '支持的格式：获取失败 ' + e;
+        $('fmts').className = 'row warn';
+      }
+    } else {
+      $('fmts').textContent = '支持的格式：不可用（无原生引擎）';
+      $('fmts').className = 'row bad';
+    }
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      $('cam').textContent = '摄像头 API：✅ 可用';
+      $('cam').className = 'row ok';
+    } else {
+      $('cam').textContent = '摄像头 API：❌ 不可用（HTTPS/localhost 才允许）';
+      $('cam').className = 'row bad';
+    }
+  })();
+
+  $('start').onclick = async () => {
+    $('start').disabled = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const v = $('v');
+      v.srcObject = stream;
+      await v.play();
+      v.style.display = 'block';
+      $('stats').style.display = 'block';
+      log('✅ 摄像头已开启，对准一维码试试');
+
+      if ('BarcodeDetector' in window) {
+        const det = new BarcodeDetector({ formats: ['ean_13','ean_8','upc_a','upc_e','code_128'] });
+        let frames = 0, lastT = performance.now(), cnt = 0;
+        const loop = async () => {
+          const now = performance.now();
+          frames++;
+          if (now - lastT >= 1000) { $('fps').textContent = frames; frames = 0; lastT = now; }
+          if (v.readyState >= 2 && v.videoWidth > 0 && !$('start').dataset.busy) {
+            const t0 = performance.now();
+            try {
+              const codes = await det.detect(v);
+              if (codes.length) {
+                cnt++; $('cnt').textContent = cnt;
+                $('ms').textContent = Math.round(performance.now() - t0);
+                for (const c of codes) log('✅ 原生识别到：' + c.rawValue + '（' + (c.format||'') + '）');
+              }
+            } catch(e) {}
+          }
+          requestAnimationFrame(loop);
+        };
+        loop();
+      } else {
+        log('❌ 本浏览器无 BarcodeDetector');
+        log('→ 当前用的应是弱软解引擎，一维码会扫不上/极慢');
+        log('👉 根治方案：让我给 grocyscan 加 Quagga2 专用一维码引擎，或改用 Chrome+装证书');
+      }
+    } catch(e) {
+      log('❌ 摄像头开启失败：' + e.name + ' ' + e.message);
+      $('start').disabled = false;
+    }
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  grocyscan:
+    build: .
+    container_name: grocyscan
+    ports:
+      - "9290:9290"   # HTTPS (需信任自签证书)
+      - "9291:9291"   # HTTP-only (带 CORS，跨域无限制)
+    volumes:
+      - ./data:/data   # 挂载配置和数据目录
+    environment:
+      - GROCY_API_KEY=your_grocy_api_key_here
+      - GROCY_URL=http://grocy:80
+    restart: unless-stopped
