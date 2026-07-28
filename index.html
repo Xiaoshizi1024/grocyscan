@@ -6,6 +6,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Grocy 扫码录入</title>
 <style>
+  /* ============================================================
+     Grocy 扫码录入 - 样式
+     版本: 2.1.0 (2026-07-28) - HTML/JS 分离版
+     ============================================================ */
   :root{
     --bg:#f4f6f8; --card:#ffffff; --ink:#1f2733; --sub:#6b7784;
     --line:#e4e8ec; --accent:#2e9e5b; --accent-d:#25834b;
@@ -17,9 +21,13 @@
   .wrap{max-width:520px;margin:0 auto;padding:12px 12px 90px;}
   header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
   header h1{font-size:19px;margin:0;font-weight:700;}
+  .header-right{display:flex;align-items:center;gap:6px;}
   .dot{width:9px;height:9px;border-radius:50%;background:#c0c7ce;display:inline-block;margin-right:6px;vertical-align:middle;}
   .dot.ok{background:var(--accent);} .dot.bad{background:var(--out);}
   .hint{font-size:12px;color:var(--sub);}
+  .btn-settings{width:36px;height:36px;border:0;background:transparent;font-size:20px;cursor:pointer;
+    border-radius:8px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;}
+  .btn-settings:active{background:rgba(0,0,0,.08);}
 
   .seg-row{display:flex;gap:10px;margin-bottom:12px;}
   .seg{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;
@@ -30,6 +38,7 @@
   .seg button.on{color:#fff;}
   #segMode button.on{background:var(--in);} #segMode.out button.on{background:var(--out);}
   #segQty  button.on{background:#3b6fb0;}
+  #segEngine button.on{background:#3b6fb0;}
 
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px;
     box-shadow:0 1px 2px rgba(0,0,0,.03);}
@@ -43,17 +52,28 @@
   .scanbox::before,.scanbox::after{content:"";position:absolute;width:24px;height:24px;border:3px solid #2e9e5b;}
   .scanbox::before{left:-4px;top:-4px;border-right:0;border-bottom:0;}
   .scanbox::after{right:-4px;bottom:-4px;border-left:0;border-top:0;}
-  .camrow{display:flex;gap:10px;margin-top:10px;}
-  .btn{flex:1;border:0;border-radius:11px;padding:12px 0;font-size:15px;font-weight:700;cursor:pointer;}
-  .btn-p{background:var(--accent);color:#fff;} .btn-p:active{background:var(--accent-d);}
-  .btn-g{background:#eef1f4;color:var(--ink);}
-  .btn-o{background:var(--out);color:#fff;}
+
+  .cam-overlay{position:absolute;bottom:10px;right:10px;display:flex;gap:8px;z-index:5;align-items:center;}
+  .cam-btn{width:44px;height:44px;border-radius:50%;border:0;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;font-size:19px;
+    background:rgba(0,0,0,.45);color:#fff;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+    transition:.18s;padding:0;}
+  .cam-btn:active{transform:scale(.92);}
+  .cam-btn.main{width:52px;height:52px;background:rgba(46,158,91,.92);font-size:22px;}
+  .cam-btn.main.on{background:rgba(224,96,58,.92);font-size:20px;}
+  .cam-btn[disabled]{opacity:.3;pointer-events:none;}
+  .cam-btn.torch-on{background:rgba(249,180,0,.88);color:#333;}
+
+  .engine-badge{position:absolute;top:8px;left:8px;
+    background:rgba(0,0,0,.5);color:#fff;font-size:11px;font-weight:600;
+    padding:3px 10px;border-radius:20px;z-index:5;pointer-events:none;
+    -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
   .manual{display:flex;gap:8px;margin-top:10px;}
   .manual input{flex:1;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:16px;outline:none;}
   .manual input:focus{border-color:var(--accent);}
-  .manual button{border:0;background:#eef1f4;border-radius:10px;padding:0 16px;font-weight:700;font-size:14px;}
+  .manual button{border:0;background:#eef1f4;border-radius:10px;padding:0 16px;font-weight:700;font-size:14px;cursor:pointer;}
 
-  /* preview */
   #preview{display:none;}
   .pv-top{display:flex;gap:12px;}
   .pv-img{width:88px;height:88px;border-radius:10px;object-fit:cover;background:#eef1f4;flex:none;}
@@ -65,12 +85,33 @@
   .pv-desc{margin-top:10px;font-size:13px;color:#39424d;white-space:pre-wrap;line-height:1.55;
     background:#f7f9fa;border-radius:10px;padding:10px 12px;max-height:150px;overflow:auto;}
   .qtybox{display:flex;align-items:center;gap:10px;margin-top:12px;}
-  .qtybox .stp{width:44px;height:44px;border:1px solid var(--line);background:#fff;border-radius:11px;font-size:22px;font-weight:700;color:var(--ink);}
+  .qtybox .stp{width:44px;height:44px;border:1px solid var(--line);background:#fff;border-radius:11px;font-size:22px;font-weight:700;color:var(--ink);cursor:pointer;}
   .qtybox input{flex:1;text-align:center;font-size:20px;font-weight:800;border:1px solid var(--line);border-radius:11px;height:44px;outline:none;}
   .qtybox .qu{font-size:13px;color:var(--sub);min-width:34px;text-align:center;}
   .cfm-row{display:flex;gap:10px;margin-top:12px;}
+  .btn{flex:1;border:0;border-radius:11px;padding:12px 0;font-size:15px;font-weight:700;cursor:pointer;}
+  .btn-p{background:var(--accent);color:#fff;} .btn-p:active{background:var(--accent-d);}
+  .btn-g{background:#eef1f4;color:var(--ink);}
 
-  /* toast */
+  .sheet-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:80;
+    opacity:0;pointer-events:none;transition:.25s;}
+  .sheet-overlay.show{opacity:1;pointer-events:auto;}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:81;
+    background:var(--card);border-radius:18px 18px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    transform:translateY(100%);transition:.3s cubic-bezier(.32,.72,0,1);
+    max-width:520px;margin:0 auto;max-height:70vh;overflow-y:auto;}
+  .sheet.show{transform:translateY(0);}
+  .sheet-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+  .sheet-head h2{font-size:17px;margin:0;font-weight:700;}
+  .sheet-close{width:32px;height:32px;border:0;background:#eef1f4;border-radius:50%;
+    font-size:16px;cursor:pointer;color:var(--sub);display:flex;align-items:center;justify-content:center;}
+  .sheet-item{margin-bottom:18px;}
+  .sheet-item:last-child{margin-bottom:0;}
+  .sheet-item .item-lbl{font-size:12px;color:var(--sub);margin-bottom:8px;display:block;font-weight:600;}
+  .chip{flex:1;border:1px solid var(--line);background:#fff;color:var(--sub);border-radius:10px;padding:11px 0;font-size:14px;font-weight:600;cursor:pointer;transition:.15s;}
+  .chip.on{background:#e8f3ec;color:var(--accent);border-color:#bfe3cd;}
+  .chip-row{display:flex;gap:8px;}
+
   #toast{position:fixed;left:50%;bottom:86px;transform:translateX(-50%) translateY(20px);
     background:#222d38;color:#fff;padding:11px 18px;border-radius:24px;font-size:14px;font-weight:600;
     opacity:0;transition:.25s;pointer-events:none;z-index:50;max-width:88%;text-align:center;}
@@ -82,13 +123,21 @@
   .log-item:last-child{border-bottom:0;}
   .log-item .t{color:var(--sub);font-size:12px;}
   .tag-in{color:var(--in);font-weight:700;} .tag-out{color:var(--out);font-weight:700;}
+
+  .cam-off-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:#1a1a2e;color:#9aa7b4;font-size:14px;text-align:center;z-index:2;gap:10px;}
+  .cam-off-msg svg{width:48px;height:48px;opacity:.5;}
+  .cam-off-msg span{opacity:.7;}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>🛒 扫码录入</h1>
-    <span class="hint"><span id="dot" class="dot"></span><span id="conn">连接中…</span></span>
+    <div class="header-right">
+      <span class="hint"><span id="dot" class="dot"></span><span id="conn">连接中…</span></span>
+      <button class="btn-settings" id="btnSettings">⚙️</button>
+    </div>
   </header>
 
   <div class="seg-row">
@@ -109,16 +158,18 @@
       <video id="scanVideo" playsinline muted></video>
       <div id="reader" style="display:none;"></div>
       <div class="scanbox"></div>
-    </div>
-    <div class="camrow">
-      <button class="btn btn-p" id="btnCam">开启摄像头</button>
-    </div>
-    <div class="hint" id="camEngine" style="margin-top:8px;"></div>
-    <div class="seg" id="segEngine" style="margin-top:8px;">
-      <span class="lbl">引擎</span>
-      <button data-v="auto" class="on">自动</button>
-      <button data-v="soft">软解</button>
-      <button data-v="native">原生</button>
+      <div class="engine-badge" id="camEngine">未开启</div>
+      <div class="cam-off-msg" id="camOffMsg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 7a2 2 0 012-2h3l2-2h4l2 2h3a2 2 0 012 2v9a2 2 0 01-2 2h-3l-2 2h-4l-2-2H5a2 2 0 01-2-2V7z"/>
+          <circle cx="12" cy="12" r="3.5"/>
+        </svg>
+        <span>点击下方 📷 开启摄像头</span>
+      </div>
+      <div class="cam-overlay">
+        <button class="cam-btn" id="btnTorch" disabled>🔦</button>
+        <button class="cam-btn main" id="btnCam">📷</button>
+      </div>
     </div>
     <div class="manual">
       <input id="mInput" inputmode="numeric" placeholder="或手动输入/扫码枪录入条码" enterkeyhint="search">
@@ -137,23 +188,33 @@
     <div class="pv-desc" id="pvDesc" style="display:none;"></div>
 
     <div id="qtyArea" style="display:none;">
+      <div class="item-lbl" style="margin:0 0 6px;">
+        <span id="pvModeLabel" style="font-weight:700;color:var(--in);">← 入库</span>
+        <span style="color:var(--sub);font-weight:400;"> &middot; </span>
+        <span id="pvQtyLabel" style="color:var(--sub);">逐件</span>
+      </div>
       <div class="qtybox">
         <button class="stp" id="qMinus">−</button>
         <input id="qInput" type="number" inputmode="decimal" value="1" min="0.001" step="1">
         <button class="stp" id="qPlus">+</button>
         <span class="qu" id="qUnit"></span>
       </div>
+      <div style="margin-top:8px;">
+        <select id="qloc" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;background:#fff;box-sizing:border-box;">
+          <option value="">不指定位置</option>
+        </select>
+      </div>
       <div class="cfm-row">
-        <button class="btn btn-g" id="btnCancel">取消</button>
-        <button class="btn btn-p" id="btnConfirm">确认写入</button>
+        <button class="btn btn-g" id="pCancel">取消</button>
+        <button class="btn btn-p" id="pConfirm">确认写入</button>
       </div>
     </div>
 
     <div id="createArea" style="display:none; border-top:1px dashed var(--line); margin-top:12px; padding-top:12px;">
       <div class="hint" style="margin-bottom:8px;">Grocy 中无此条码，新建产品并入库：</div>
       <img id="cImg" style="width:100%;height:140px;object-fit:cover;border-radius:10px;background:#eef1f4;margin-bottom:8px;display:none;">
-      <input id="cName" placeholder="产品名称（可由 apizero 自动填入）" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;outline:none;margin-bottom:8px;box-sizing:border-box;">
-      <textarea id="cDesc" placeholder="描述/规格（可由 apizero 自动填入）" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:14px;outline:none;margin-bottom:8px;box-sizing:border-box;height:64px;resize:none;"></textarea>
+      <input id="cName" placeholder="产品名称" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;outline:none;margin-bottom:8px;box-sizing:border-box;">
+      <textarea id="cDesc" placeholder="描述/规格" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:14px;outline:none;margin-bottom:8px;box-sizing:border-box;height:64px;resize:none;"></textarea>
       <select id="cLoc" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;margin-bottom:8px;box-sizing:border-box;background:#fff;"></select>
       <select id="cQu" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;margin-bottom:8px;box-sizing:border-box;background:#fff;"></select>
       <div class="qtybox">
@@ -175,357 +236,37 @@
   </div>
 </div>
 
+<div class="sheet-overlay" id="sheetOverlay"></div>
+<div class="sheet" id="sheetSettings">
+  <div class="sheet-head">
+    <h2>设置</h2>
+    <button class="sheet-close" id="btnCloseSheet">✕</button>
+  </div>
+  <div class="sheet-item">
+    <span class="item-lbl">识别引擎</span>
+    <div class="chip-row" id="chipEngine" style="margin-bottom:12px;">
+      <button class="chip on" data-v="auto">自动</button>
+      <button class="chip" data-v="native">原生</button>
+      <button class="chip" data-v="zxing">ZXing</button>
+      <button class="chip" data-v="quagga">Quagga</button>
+    </div>
+    <span class="hint" style="font-size:11px;line-height:1.6;">
+      自动=先试原生,失败回退ZXing。原生=硬件加速(最快)。ZXing=最稳。Quagga=画面较卡。
+    </span>
+  </div>
+  <div class="sheet-item">
+    <span class="item-lbl">扫码反馈</span>
+    <div class="chip-row">
+      <button class="chip on" id="btnSnd">🔊 音效</button>
+      <button class="chip on" id="btnVib">📳 震动</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script src="/html5-qrcode.min.js"></script>
 <script src="/quagga.min.js"></script>
-<script>
-const S = { mode:"in", qty:"each", busy:false, lastCode:"", lastTime:0, pending:null, cam:null, camOn:false };
-
-/* ---------- 工具 ---------- */
-function toast(msg, type){ const t=document.getElementById("toast"); t.textContent=msg;
-  t.className="show "+(type||"info"); clearTimeout(t._h); t._h=setTimeout(()=>t.className="",1800); }
-function esc(s){ return (s==null?"":String(s)); }
-function nowStr(){ const d=new Date(); const p=n=>(n<10?"0":"")+n; return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds()); }
-
-/* ---------- 开关 ---------- */
-function bindSeg(id, onchange){
-  const seg=document.getElementById(id);
-  seg.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{
-    seg.querySelectorAll("button").forEach(x=>x.classList.remove("on"));
-    b.classList.add("on"); onchange(b.dataset.v);
-  }));
-}
-bindSeg("segMode", v=>{ S.mode=v; document.getElementById("segMode").classList.toggle("out", v==="out"); });
-bindSeg("segQty",  v=>{ S.qty=v; });
-bindSeg("segEngine", v=>{ S.engine=v; });
-
-/* ---------- 健康检查 ---------- */
-fetch("/health").then(r=>r.json()).then(j=>{
-  const ok = j.ok && j.key_set;
-  document.getElementById("dot").className="dot "+(ok?"ok":"bad");
-  document.getElementById("conn").textContent = ok?"已连接":(j.key_set?"Grocy异常":"未配密钥");
-}).catch(()=>{ document.getElementById("dot").className="dot bad";
-  document.getElementById("conn").textContent="后端离线"; });
-
-/* ---------- 摄像头(原生 BarcodeDetector 优先) ---------- */
-// html5-qrcode 格式枚举(数值), 显式包含一维商品码 EAN-13/UPC-A 等。
-// 注意: 不能依赖 Html5QrcodeSupportedFormats 全局是否暴露(本地打包版未暴露),
-// 直接硬编码数值最稳。枚举: QR=0, AZTEC=1, CODABAR=2, CODE_39=3, CODE_93=4,
-// CODE_128=5, DATA_MATRIX=6, ITF=8, EAN_13=9, EAN_8=10, UPC_A=11, UPC_E=12, PDF_417=13, RSS_14=14, RSS_EXPANDED=15
-const QR_FORMATS = [7,8,15,16,5,3,4,12,1,2,6,17,9,10,11,13,14];
-const btnCam=document.getElementById("btnCam");
-let scanner=null;
-document.getElementById("camEngine").textContent = "识别引擎: 开启后显示实际调用";
-
-btnCam.addEventListener("click", async ()=>{
-  if(S.camOn){ await stopCam(); return; }
-  try{
-    const engineMode = S.engine || "auto";
-    let useNative = (engineMode === "native");
-
-    // html5-qrcode 兜底(自包含: 自己调 getUserMedia, 不依赖外部流)
-    const startHtml5Fresh = async ()=>{
-      document.getElementById("scanVideo").style.display="none";
-      const rd=document.getElementById("reader"); rd.style.display="block";
-      S.cam=new Html5Qrcode("reader",{verbose:false});
-      // ZXing 是纯CPU软解,需要:高分辨率(更多像素细节)+低帧率(每帧解码更充分)+大搜索区(无定位器)
-      const cfg={
-        fps:8,                                                    // ZXing 软解,高帧率反而抢CPU
-        qrbox:(vw,vh)=>{ const w=Math.floor(vw*0.9); return {width:w, height:Math.floor(vw*0.42)}; },  // ZXing 无定位器,增大搜索区
-        aspectRatio:undefined,
-        useBarCodeDetectorIfSupported:false,
-        // 强制高分辨率(1080p+),给 ZXing 足够像素识别条码细节
-        videoConstraints:{ facingMode:"environment", width:{ideal:1920}, height:{ideal:1080} }
-      };
-      cfg.formatsToSupport=QR_FORMATS;
-      S.cam.start({facingMode:"environment"}, cfg, onScan, ()=>{}).then(()=>{
-        // 尝试 2x 变焦
-        try{
-          const v=document.querySelector('#reader video');
-          if(v && v.srcObject){
-            const [t]=v.srcObject.getVideoTracks(); const c=t.getCapabilities();
-            if(c && c.zoom){ t.applyConstraints({advanced:[{zoom:Math.min(2.0,c.zoom.max)}]}).catch(()=>{}); }
-          }
-        }catch(e){}
-        S.camOn=true; btnCam.textContent="关闭摄像头"; btnCam.className="btn btn-g";
-        document.getElementById("camEngine").textContent="识别引擎: 软解·一维码 (ZXing,高分辨率)";
-        toast("摄像头已开启(软解·一维码,高分辨率)","ok");
-      }).catch(e=>{
-        toast("软解开启失败:"+(e&&e.message||e),"err");
-        document.getElementById("scanVideo").style.display="block"; rd.style.display="none";
-      });
-    };
-
-    if(useNative){
-      // === 原生路径(装了CA证书的Chrome等, 原生支持一维码): 最快 ===
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:"environment" }, audio:false
-      });
-      // 尝试 2x 变焦
-      try{ const [t]=stream.getVideoTracks(); const c=t.getCapabilities();
-        if(c.zoom){ t.applyConstraints({advanced:[{zoom:Math.min(2.0,c.zoom.max)}]}).catch(()=>{}); }
-      }catch(e){}
-      const video=document.getElementById("scanVideo");
-      video.style.display="block";
-      video.srcObject=stream;
-      try{ await video.play(); }catch(e){}
-      await new Promise(r=>setTimeout(r,300));
-      const detector=new BarcodeDetector({ formats:["ean_13","ean_8","upc_a","upc_e","code_128"] });
-      let running=true;
-      let cand=null, candN=0;
-      const loop=async ()=>{
-        if(!running) return;
-        if(!S.busy && video.readyState>=2 && video.videoWidth>0){
-          try{
-            const codes=await detector.detect(video);
-            const v=(codes&&codes[0]&&codes[0].rawValue)?String(codes[0].rawValue).trim():null;
-            if(v){
-              if(v===cand){ candN++; } else { cand=v; candN=1; }
-              if(candN>=2){ cand=null; candN=0; onScan(v); }
-            }else{ cand=null; candN=0; }
-          }catch(e){}
-        }
-        requestAnimationFrame(loop);
-      };
-      loop();
-      scanner={ stop:()=>{ running=false; stream.getTracks().forEach(t=>t.stop()); } };
-      S.camOn=true; btnCam.textContent="关闭摄像头"; btnCam.className="btn btn-g";
-      document.getElementById("camEngine").textContent="识别引擎: 原生识别·一维码强";
-      toast("摄像头已开启(原生识别·一维码强)","ok");
-    } else {
-      // === 软解: Quagga 优先 ===
-      // 关键: Quagga 路径不预先 getUserMedia! 让 Quagga LiveStream 独占摄像头。
-      // 之前先 getUserMedia 再 stop 再让 Quagga 重新 getUserMedia, 手机上摄像头刚释放还没
-      // ready -> Quagga 抢不到 -> init 失败 -> 降级 ZXing。去掉预获取后 Quagga 直接拿摄像头。
-      if(typeof Quagga!=="undefined"){
-        const rd=document.getElementById("reader"); rd.style.display="block";
-        document.getElementById("scanVideo").style.display="none";
-        try{
-          function startQuagga(workers){
-            Quagga.init({
-              inputStream:{
-                type:"LiveStream",
-                constraints:{ facingMode:"environment" },
-                target: rd,
-                area: { top:"33%", right:"90%", left:"10%", bottom:"67%" }  // ROI: 只扫描中间扫描框区域(80%宽×34%高,居中)
-              },
-              decoder:{ readers:["ean_reader","ean_8_reader","upc_reader","upc_e_reader","code_128_reader"], multiple:false },
-              locator:{ patchSize:"medium", halfSample:true },
-              numOfWorkers: workers
-            }, function(err){
-              if(err){
-                console.error("[Quagga] init error (workers="+workers+"):", err);
-                if(workers>0){ toast("Quagga "+workers+"worker失败,重试单线程","err"); startQuagga(0); return; }
-                toast("Quagga 初始化失败:"+(err&&err.message||err)+",回退ZXing","err"); startHtml5Fresh(); return;
-              }
-              Quagga.start();
-              // 尝试 2x 变焦(让条码在画面中更大)
-              setTimeout(()=>{
-                try{
-                  const v=rd.querySelector("video");
-                  if(v&&v.srcObject){ const [t]=v.srcObject.getVideoTracks(); const c=t.getCapabilities();
-                    if(c.zoom){ t.applyConstraints({advanced:[{zoom:Math.min(2.0,c.zoom.max)}]}).catch(()=>{}); } }
-                }catch(e){}
-              },600);
-              console.log("[Quagga] started ok, workers="+workers);
-            });
-          }
-          // 移动端直接 0 worker(主线程解码), 避免夸克等浏览器 worker 创建失败
-          startQuagga(0);
-          Quagga.onDetected(function(res){
-            const code = res && res.codeResult && res.codeResult.code;
-            if(code) onScan(String(code).trim());
-          });
-          scanner={ stop:()=>{ try{ Quagga.stop(); }catch(e){} } };
-          S.camOn=true; btnCam.textContent="关闭摄像头"; btnCam.className="btn btn-g";
-          document.getElementById("camEngine").textContent="识别引擎: Quagga·一维码专用";
-          toast("摄像头已开启(Quagga·一维码专用)","ok");
-        }catch(e){
-          console.error("[Quagga] sync error:", e);
-          toast("Quagga 异常:"+(e&&e.message||e)+",回退ZXing","err");
-          startHtml5Fresh();
-        }
-      } else if(typeof Html5Qrcode!=="undefined"){
-        toast("⚠️ Quagga 引擎未加载(检查 /quagga.min.js 是否 404),已回退 ZXing 软解","err");
-        await startHtml5Fresh();
-      } else {
-        toast("当前浏览器不支持一维码识别,请用夸克/Chrome 最新版","err");
-      }
-    }
-  }catch(e){
-    let msg="无法打开摄像头";
-    if(e && e.name){
-      if(e.name==="NotAllowedError") msg="摄像头权限被拒绝,请在浏览器设置里允许本站点使用摄像头";
-      else if(e.name==="NotFoundError") msg="未找到摄像头设备";
-      else if(e.name==="NotReadableError") msg="摄像头被其他应用占用,请关闭相机/扫码软件后重试";
-      else if(e.name==="OverconstrainedError") msg="后置摄像头参数不被支持,请换浏览器或重启手机";
-      else msg="无法打开摄像头:"+(e.message||e.name);
-    } else if(e){ msg="无法打开摄像头:"+(e.message||e); }
-    toast(msg,"err");
-  }
-});
-
-async function stopCam(){
-  if(scanner){ try{ scanner.stop(); }catch(e){} scanner=null; }
-  if(S.cam){ try{ await S.cam.stop(); S.cam.clear(); }catch(e){} S.cam=null; }
-  const v=document.getElementById("scanVideo"); if(v) v.srcObject=null;
-  const rd=document.getElementById("reader"); if(rd) rd.style.display="none";
-  S.camOn=false; btnCam.textContent="开启摄像头"; btnCam.className="btn btn-p";
-}
-
-function onScan(code){
-  const t=Date.now();
-  if(S.busy) return;
-  if(code===S.lastCode && (t-S.lastTime)<2500) return; // 去重
-  S.lastCode=code; S.lastTime=t;
-  handle(code);
-}
-
-/* ---------- 手动输入 ---------- */
-document.getElementById("mGo").addEventListener("click",()=>{ const v=document.getElementById("mInput").value.trim(); if(v) handle(v); });
-document.getElementById("mInput").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const v=e.target.value.trim(); if(v){ handle(v); e.target.select(); } } });
-
-/* ---------- 核心流程 ---------- */
-async function handle(code){
-  S.busy=true;
-  toast("查询中… "+code,"info");
-  try{
-    const r = await fetch("/api/lookup?barcode="+encodeURIComponent(code));
-    const d = await r.json();
-    if(!d.found){
-      if(d.need_create){ S.pending=d; showCreate(d); }   // busy 保持, 等建档完成
-      else { toast("未找到:"+(d.error||code),"err"); S.busy=false; }
-      return;
-    }
-    d.__barcode=code;
-    if(S.qty==="each"){
-      showPreview(d,false);
-      const amt=1;
-      await writeStock(d, amt);
-      S.busy=false;
-    }else{
-      // 数量模式:显示预览+数量输入,等确认
-      showPreview(d,true);
-      S.pending=d;
-      // busy 保持 true,直到确认或取消
-    }
-  }catch(e){ toast("请求失败:"+e,"err"); S.busy=false; }
-}
-
-function showPreview(d, withQty){
-  document.getElementById("preview").style.display="block";
-  document.getElementById("pvName").firstChild.nodeValue = esc(d.name)||"(无名称)";
-  document.getElementById("pvNew").style.display = d.created?"inline-block":"none";
-  document.getElementById("pvStock").textContent = "当前库存: "+esc(d.stock_amount)+" "+esc(d.qu_stock||"");
-  const img=document.getElementById("pvImg");
-  if(d.picture_file_name){ img.src="/api/image?file="+encodeURIComponent(d.picture_file_name); img.classList.remove("ph"); img.alt=""; }
-  else { img.removeAttribute("src"); img.classList.add("ph"); img.alt="无图"; }
-  const desc=document.getElementById("pvDesc");
-  if(d.description && d.description.trim()){ desc.style.display="block"; desc.textContent=d.description.replace(/<br\s*\/?>/gi,"\n").replace(/<[^>]+>/g,""); }
-  else desc.style.display="none";
-  document.getElementById("qUnit").textContent = esc(d.qu_stock||"");
-  document.getElementById("qtyArea").style.display = withQty?"block":"none";
-  if(withQty){ const qi=document.getElementById("qInput"); qi.value="1"; qi.focus(); qi.select(); }
-  document.getElementById("preview").scrollIntoView({behavior:"smooth",block:"nearest"});
-}
-
-/* 数量步进 */
-document.getElementById("qMinus").addEventListener("click",()=>{ const q=document.getElementById("qInput"); q.value=Math.max(1,(parseFloat(q.value)||1)-1); });
-document.getElementById("qPlus").addEventListener("click",()=>{ const q=document.getElementById("qInput"); q.value=(parseFloat(q.value)||0)+1; });
-document.getElementById("btnCancel").addEventListener("click",()=>{ document.getElementById("qtyArea").style.display="none"; S.pending=null; S.busy=false; S.lastCode=""; toast("已取消","info"); });
-document.getElementById("btnConfirm").addEventListener("click",async ()=>{
-  if(!S.pending) return;
-  const amt=parseFloat(document.getElementById("qInput").value)||0;
-  if(amt<=0){ toast("数量需大于0","err"); return; }
-  await writeStock(S.pending, amt);
-  document.getElementById("qtyArea").style.display="none";
-  S.pending=null; S.busy=false; S.lastCode="";
-});
-
-/* ---------- 新建产品(库内无条码时) ---------- */
-function showCreate(d){
-  document.getElementById("preview").style.display="block";
-  document.getElementById("pvName").firstChild.nodeValue = "新建产品";
-  document.getElementById("pvNew").style.display="inline-block";
-  document.getElementById("pvStock").textContent="";
-  const img=document.getElementById("pvImg");
-  img.style.display="none";   // 新建模式隐藏顶部图, 改用表单内 cImg
-  const cimg=document.getElementById("cImg");
-  const sg = d.suggest||{};
-  // apizero 远程图经后端代理(/api/imgproxy)加载, 避免自签HTTPS页混内容拦截/外链防盗链
-  if(sg.image_url){ cimg.src="/api/imgproxy?url="+encodeURIComponent(sg.image_url); cimg.style.display="block"; }
-  else { cimg.style.display="none"; }
-  const desc=document.getElementById("pvDesc");
-  if(sg.description && sg.description.trim()){ desc.style.display="block"; desc.textContent=sg.description; }
-  else desc.style.display="none";
-  document.getElementById("qtyArea").style.display="none";
-  const loc=document.getElementById("cLoc"); loc.innerHTML="";
-  (d.locations||[]).forEach(l=>{ const o=document.createElement("option"); o.value=l.id; o.textContent=l.name; loc.appendChild(o); });
-  const qu=document.getElementById("cQu"); qu.innerHTML="";
-  (d.quantity_units||[]).forEach(q=>{ const o=document.createElement("option"); o.value=q.id; o.textContent=q.name; qu.appendChild(o); });
-  // 用 apizero 返回的 suggest 预填名称/描述
-  document.getElementById("cName").value = sg.name||"";
-  document.getElementById("cDesc").value = sg.description||"";
-  document.getElementById("cQty").value="1";
-  document.getElementById("createArea").style.display="block";
-  if(sg.name){ document.getElementById("cLoc").focus(); } else { document.getElementById("cName").focus(); }
-  document.getElementById("preview").scrollIntoView({behavior:"smooth",block:"nearest"});
-}
-document.getElementById("cMinus").addEventListener("click",()=>{ const q=document.getElementById("cQty"); q.value=Math.max(1,(parseFloat(q.value)||1)-1); });
-document.getElementById("cPlus").addEventListener("click",()=>{ const q=document.getElementById("cQty"); q.value=(parseFloat(q.value)||0)+1; });
-document.getElementById("btnCNCancel").addEventListener("click",()=>{
-  document.getElementById("createArea").style.display="none"; S.pending=null; S.busy=false; S.lastCode=""; toast("已取消","info");
-});
-document.getElementById("btnCreate").addEventListener("click",async ()=>{
-  if(!S.pending) return;
-  const name=document.getElementById("cName").value.trim();
-  if(!name){ toast("请填写产品名称","err"); return; }
-  const loc=parseInt(document.getElementById("cLoc").value,10);
-  const qu=parseInt(document.getElementById("cQu").value,10);
-  const amt=parseFloat(document.getElementById("cQty").value)||0;
-  const desc=document.getElementById("cDesc").value.trim();
-  const imgUrl=(S.pending.suggest && S.pending.suggest.image_url)||"";
-  if(amt<=0){ toast("数量需大于0","err"); return; }
-  toast("建档中…","info");
-  try{
-    const r=await fetch("/api/create",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({barcode:S.pending.barcode, name:name, location_id:loc, qu_id:qu, description:desc, image_url:imgUrl})});
-    const j=await r.json();
-    if(j.ok){
-      const prod={product_id:j.product_id, name:j.name, stock_amount:0, qu_stock:""};
-      await writeStock(prod, amt);
-      document.getElementById("createArea").style.display="none";
-      S.pending=null; S.busy=false; S.lastCode="";
-    }else{
-      toast("建档失败:"+(j.error||"HTTP "+j.status),"err");
-    }
-  }catch(e){ toast("建档异常:"+e,"err"); }
-});
-
-async function writeStock(d, amount){
-  const mode=S.mode;
-  try{
-    const r=await fetch("/api/stock",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({product_id:d.product_id, amount:amount, mode:mode})});
-    const j=await r.json();
-    if(j.ok){
-      toast((mode==="in"?"✓ 入库 ":"✓ 出库 ")+esc(d.name)+" ×"+amount,"ok");
-      addLog(d.name, amount, mode);
-    }else{
-      toast("写入失败:"+(j.error||("HTTP "+j.status)),"err");
-    }
-  }catch(e){ toast("写入异常:"+e,"err"); }
-}
-
-function addLog(name, amount, mode){
-  const box=document.getElementById("logList");
-  if(box.querySelector(".hint")) box.innerHTML="";
-  const el=document.createElement("div"); el.className="log-item";
-  el.innerHTML='<span><span class="'+(mode==="in"?"tag-in":"tag-out")+'">'+(mode==="in"?"入":"出")+'</span> '+esc(name)+' ×'+amount+'</span><span class="t">'+nowStr()+'</span>';
-  box.insertBefore(el, box.firstChild);
-  while(box.children.length>15) box.removeChild(box.lastChild);
-}
-</script>
+<script src="/app.js"></script>
 </body>
 </html>

@@ -2,15 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 Grocy 手机扫码录入 - 轻量后端 (纯 Python 标准库, 零第三方依赖)
+版本: V2.01 (2026-07-27)
+  V2.01: 新增 userfields 写入 (PUT /api/userfields/products/{id}), 支持 brand/category/manufacturer/net_content/feature 自定义字段
 职责:
   1. 提供 HTTPS (自签证书) -> 手机浏览器才允许开摄像头
   2. 代理 Grocy API (服务端注入 GROCY-API-KEY, 避免浏览器跨域 + 隐藏密钥)
   3. 条码查询: 先查库内产品, 查不到则触发外部条码插件(apizero) add=true 自动建档
+  4. apizero 商品字段写入 Grocy 自定义字段 (userfields), 不再拼进 description
 环境变量:
   GROCY_URL       Grocy 地址, 默认 http://172.17.0.1:9283 (docker 网关回连宿主发布端口)
   GROCY_API_KEY   Grocy API 密钥 (必填)
   PORT            监听端口, 默认 9290
 """
+
+VERSION = "2.01"
 import os
 import ssl
 import json
@@ -114,7 +119,19 @@ def load_apizero_key():
 
 
 def _parse_apizero(j):
-    """解析 apizero 返回: 兼容 PRO 版(barcode-gs1, 顶层字段) 与 免费版(barcode-lookup, 包在 data 内)。"""
+    """解析 apizero 返回: 兼容 PRO 版(barcode-gs1, 顶层字段) 与 免费版(barcode-lookup, 包在 data 内)。
+
+    返回结构化数据:
+      - name: 产品名称
+      - image_url: 产品图片 URL
+      - userfields: Grocy 自定义字段映射 (key-value, 对应 userfields 表的 name 字段)
+        brand      -> 品牌
+        category   -> 类别
+        feature    -> 产品特征 (多行文本, 含规格/净含量/产地等)
+        manufacturer -> 生产商列表
+        net_content  -> 净含量
+      - description: 备用文本 (兼容旧代码, 合并全部信息)
+    """
     if not isinstance(j, dict):
         return None
     data = j.get("data") or {}
@@ -122,27 +139,74 @@ def _parse_apizero(j):
     name = (src.get("name") or j.get("name") or "").strip()
     if not name:
         return None  # 未登记或无名称 -> 视为查不到
-    brand = src.get("brand") or ""
-    cat = src.get("category") or ""
-    mf = src.get("manufacturer") or ""
-    spec = src.get("specification") or src.get("spec") or ""
-    net = src.get("net_content") or ""
+
+    brand = (src.get("brand") or "").strip()
+    cat = (src.get("category") or "").strip()
+    mf = (src.get("manufacturer") or "").strip()
+    # 规格: gs1 用 specification, lookup 用 spec
+    spec = (src.get("specification") or src.get("spec") or "").strip()
+    net = (src.get("net_content") or "").strip()
+    general_name = (src.get("general_name") or "").strip()
+    country = (src.get("country") or "").strip()
+    price = src.get("price")
+    desc_raw = (src.get("description") or "").strip()
+    # 列表价格 (lookup 返回 number, gs1 返回 string)
+    if price is not None and price != "":
+        price = str(price)
+
     imgs = src.get("images") or []
     img = imgs[0] if imgs else (src.get("image") or "")
-    parts = []
+
+    # --- userfields (写入 Grocy 自定义字段) ---
+    uf = {}
     if brand:
-        parts.append("品牌: " + brand)
+        uf["brand"] = brand
     if cat:
-        parts.append("分类: " + cat)
+        uf["category"] = cat
     if mf:
-        parts.append("生产商: " + mf)
+        uf["manufacturer"] = mf
+    if net:
+        uf["net_content"] = net
+    # feature (产品特征, 多行文本): 通用名 + 规格 + 净含量 + 产地 + 参考价 + 附加描述
+    feat_lines = []
+    if general_name:
+        feat_lines.append(general_name)
+    if spec:
+        feat_lines.append(spec)
+    if net and net != spec:  # 避免与上面重复
+        feat_lines.append("净含量: " + net)
+    if country:
+        feat_lines.append("产地: " + country)
+    if price:
+        feat_lines.append("参考价: " + price + " 元")
+    if desc_raw:
+        feat_lines.append(desc_raw)
+    if feat_lines:
+        uf["feature"] = "\n".join(feat_lines)
+
+    # --- description (备用, 兼容旧代码) ---
+    all_parts = []
+    if brand:
+        all_parts.append("品牌: " + brand)
+    if cat:
+        all_parts.append("分类: " + cat)
+    if mf:
+        all_parts.append("生产商: " + mf)
     spec_s = spec or net
     if spec_s:
-        parts.append("规格: " + spec_s)
+        all_parts.append("规格: " + spec_s)
+    if country:
+        all_parts.append("产地: " + country)
+    if price:
+        all_parts.append("参考价: " + price + " 元")
+    if desc_raw:
+        all_parts.append(desc_raw)
+
     return {
         "name": name,
-        "description": "\n".join(parts),
         "image_url": img,
+        "userfields": uf,
+        "description": "\n".join(all_parts),
     }
 
 
@@ -177,6 +241,22 @@ def lookup(barcode):
         d = parse_details(raw)
         if d:
             d["created"] = False
+            locs = []
+            try:
+                st_loc, _, raw_loc = grocy("GET", "/api/objects/locations")
+                if st_loc == 200:
+                    for l in (json.loads(raw_loc.decode("utf-8")) or []):
+                        if l.get("id"): locs.append({"id": l["id"], "name": l.get("name", "")})
+            except: pass
+            d["locations"] = locs
+            qus = []
+            try:
+                st_q, _, raw_q = grocy("GET", "/api/objects/quantity_units")
+                if st_q == 200:
+                    for q in (json.loads(raw_q.decode("utf-8")) or []):
+                        if q.get("id"): qus.append({"id": q["id"], "name": q.get("name", "")})
+            except: pass
+            d["quantity_units"] = qus
             return d
     # 2) 库内无此条码 -> 直接拉取 Grocy 已有位置/数量单位, 让前端引导用户建档。
     #    不再调用外部 apizero 插件: 该插件在 Grocy 已有位置时仍会误报
@@ -214,6 +294,7 @@ def lookup(barcode):
                 "name": info.get("name", ""),
                 "description": info.get("description", ""),
                 "image_url": info.get("image_url", ""),
+                "userfields": info.get("userfields", {}),
             }
     except Exception:
         pass
@@ -260,10 +341,22 @@ def upload_product_image(img_bytes, ext):
         return ""
 
 
-def create_product(barcode, name, location_id, qu_id, description="", image_url=""):
+def create_product(barcode, name, location_id, qu_id, description="", image_url="", userfields=None):
     """直接在 Grocy 建档并绑定条码, 不依赖外部插件。
-    可选: description(描述/规格), image_url(apizero 图片, 自动下载并上传到 Grocy)。
-    返回 (product_id, error_msg); 成功时 error_msg 为空字符串。"""
+
+    参数:
+      barcode: 商品条码
+      name: 产品名称
+      location_id: 存放位置 id
+      qu_id: 数量单位 id
+      description: 描述/规格 (备用字段)
+      image_url: 产品图片 URL (自动下载上传)
+      userfields: dict, Grocy 自定义字段映射 (key=字段名, value=值)
+        如 {"brand":"伊利","category":"奶酪","manufacturer":"xxx","net_content":"90克","feature":"..."}
+        Grocy 自定义字段存储在 userfield_values 表中, 需通过独立端点 PUT /api/userfields/products/{id} 写入。
+
+    返回 (product_id, error_msg); 成功时 error_msg 为空字符串。
+    """
     body = {
         "name": name,
         "location_id": int(location_id),
@@ -291,6 +384,21 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
     # 绑定条码到该产品
     grocy("POST", "/api/objects/product_barcodes",
           {"product_id": new_id, "barcode": barcode, "qu_id": int(qu_id)})
+
+    # 写入 userfields (自定义字段) — 需通过独立端点 PUT /api/userfields/products/{id}
+    # 格式: {"brand":"伊利","category":"奶酪"} (key-value, 不是 JSON 字符串)
+    if userfields:
+        try:
+            uf = {}
+            for key in ("brand", "category", "feature", "GDSInfo", "manufacturer", "net_content"):
+                v = userfields.get(key)
+                if v is not None and v != "":
+                    uf[key] = str(v).strip()
+            if uf:
+                grocy("PUT", "/api/userfields/products/%s" % new_id, uf)
+        except Exception:
+            pass  # userfields 写入失败不影响建档成功
+
     # 自动下载 apizero 图片并上传到 Grocy(失败静默, 不影响建档)
     if image_url:
         try:
@@ -308,13 +416,15 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
     return new_id, ""
 
 
-def change_stock(product_id, amount, mode):
+def change_stock(product_id, amount, mode, location_id=None):
     if mode == "out":
         path = "/api/stock/products/%s/consume" % product_id
         body = {"amount": amount, "transaction_type": "consume", "spoiled": False}
     else:
         path = "/api/stock/products/%s/add" % product_id
         body = {"amount": amount, "transaction_type": "purchase"}
+    if location_id:
+        body["location_id"] = int(location_id)
     st, ct, raw = grocy("POST", path, body)
     ok = st in (200, 201)
     msg = ""
@@ -373,6 +483,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self._add_cors()
         self.end_headers()
         self.wfile.write(data)
@@ -447,9 +558,9 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        if path == "/health":
+        if path in ("/health", "/api/health"):
             return self._json({"ok": True, "grocy": GROCY_URL, "key_set": bool(API_KEY),
-                               "apizero_on": bool(load_apizero_key())})
+                               "apizero_on": bool(load_apizero_key()), "version": VERSION})
         if path == "/api/lookup":
             bc = (qs.get("barcode", [""])[0] or "").strip()
             if not bc:
@@ -528,12 +639,13 @@ class H(BaseHTTPRequestHandler):
             try:
                 ln = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(ln).decode("utf-8"))
-            except Exception:
-                return self._json({"ok": False, "error": "请求体解析失败"}, 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": "请求体解析失败: " + str(e)}, 400)
             barcode = (body.get("barcode") or "").strip()
             name = (body.get("name") or "").strip()
             desc = (body.get("description") or "").strip()
             img_url = (body.get("image_url") or "").strip()
+            uf = body.get("userfields") or {}
             try:
                 loc = int(body.get("location_id"))
             except Exception:
@@ -544,7 +656,7 @@ class H(BaseHTTPRequestHandler):
                 qu = 0
             if not barcode or not name or loc <= 0 or qu <= 0:
                 return self._json({"ok": False, "error": "参数错误(条码/名称/位置/单位必填)"}, 400)
-            pid, msg = create_product(barcode, name, loc, qu, desc, img_url)
+            pid, msg = create_product(barcode, name, loc, qu, desc, img_url, userfields=uf)
             if pid:
                 return self._json({"ok": True, "product_id": pid, "name": name})
             return self._json({"ok": False, "error": msg}, 400)
@@ -553,17 +665,18 @@ class H(BaseHTTPRequestHandler):
         try:
             ln = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(ln).decode("utf-8"))
-        except Exception:
-            return self._json({"ok": False, "error": "请求体解析失败"}, 400)
+        except Exception as e:
+            return self._json({"ok": False, "error": "请求体解析失败: " + str(e)}, 400)
         pid = body.get("product_id")
         try:
             amount = float(body.get("amount", 1))
         except Exception:
             amount = 1
         mode = body.get("mode", "in")
+        loc_id = body.get("location_id")
         if not pid or amount <= 0:
             return self._json({"ok": False, "error": "参数错误"}, 400)
-        ok, st, msg = change_stock(pid, amount, mode)
+        ok, st, msg = change_stock(pid, amount, mode, loc_id)
         return self._json({"ok": ok, "status": st, "error": msg})
 
 
