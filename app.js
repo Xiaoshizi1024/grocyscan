@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Grocy ????????? - ??????
  * ???: 2.3.0 (2026-07-28) - ????? */
 
@@ -120,6 +120,22 @@ async function handle(code) {
         document.getElementById("pvDesc").textContent = d.description;
       } else {
         sh("pvDesc", "display", "none");
+      }
+      var ufEl = document.getElementById("pvUf");
+      if (d.userfields) {
+        var ufParts = [];
+        if (d.userfields.brand) ufParts.push(d.userfields.brand);
+        if (d.userfields.category) ufParts.push(d.userfields.category);
+        if (d.userfields.manufacturer) ufParts.push(d.userfields.manufacturer);
+        if (d.userfields.net_content) ufParts.push(d.userfields.net_content);
+        if (ufParts.length > 0) {
+          ufEl.textContent = ufParts.join(" \u00B7 ");
+          sh("pvUf", "display", "block");
+        } else {
+          sh("pvUf", "display", "none");
+        }
+      } else {
+        sh("pvUf", "display", "none");
       }
       // qty area
       sh("qtyArea", "display", "block");
@@ -248,6 +264,7 @@ async function confirmCreate() {
         qu_id: quId,
         description: document.getElementById("cDesc").value.trim(),
         image_url: (S.pending.suggest && S.pending.suggest.image_url) || "",
+        userfields: (S.pending.suggest && S.pending.suggest.userfields) || {},
       }),
     });
     const d = await r.json();
