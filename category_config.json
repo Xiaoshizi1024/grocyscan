@@ -1,0 +1,38 @@
+{
+  "乳制品": {
+    "product_group": "乳制品",
+    "best_before_days": 30
+  },
+  "肉类": {
+    "product_group": "肉类",
+    "best_before_days": 14
+  },
+  "蔬果": {
+    "product_group": "蔬果",
+    "best_before_days": 14
+  },
+  "饮料": {
+    "product_group": "饮料",
+    "best_before_days": 365
+  },
+  "酒类": {
+    "product_group": "酒类",
+    "best_before_days": 3650
+  },
+  "米面粮油": {
+    "product_group": "米面粮油",
+    "best_before_days": 730
+  },
+  "化妆品": {
+    "product_group": "化妆品",
+    "best_before_days": 1095
+  },
+  "日用品": {
+    "product_group": "日用品",
+    "best_before_days": 1095
+  },
+  "药品": {
+    "product_group": "药品",
+    "best_before_days": 1095
+  }
+}
