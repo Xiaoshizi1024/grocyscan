@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Grocy 手机扫码录入 - 轻量后端 (纯 Python 标准库, 零第三方依赖)
@@ -29,6 +29,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 GROCY_URL = os.environ.get("GROCY_URL", "http://172.17.0.1:9283").rstrip("/")
 API_KEY = os.environ.get("GROCY_API_KEY", "").strip()
+
+# 加载产品分类配置
+CATEGORY_CONFIG = {}
+_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_config.json")
+try:
+    with open(_cfg_path, "r", encoding="utf-8") as _f:
+        CATEGORY_CONFIG = json.load(_f)
+except Exception:
+    pass
+
 PORT = int(os.environ.get("PORT", "9290"))
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,6 +73,7 @@ def parse_details(raw):
     if not prod.get("id"):
         return None
     pid = prod.get("id")
+    # fetch custom fields (userfields)
     uf = {}
     st_uf, _, raw_uf = grocy("GET", "/api/userfields/products/" + str(pid))
     if st_uf == 200:
@@ -169,6 +180,11 @@ def _parse_apizero(j):
 
     imgs = src.get("images") or []
     img = imgs[0] if imgs else (src.get("image") or "")
+    # Fix: gds.org.cn images are often 404, use apizero lookup image instead
+    if img and "gds.org.cn" in img:
+        img = "https://v1.apizero.cn/api/barcode-lookup?mode=image&barcode=" + src.get("barcode", j.get("barcode", ""))
+    elif not img and (src.get("barcode") or j.get("barcode")):
+        img = "https://v1.apizero.cn/api/barcode-lookup?mode=image&barcode=" + (src.get("barcode") or j.get("barcode", ""))
 
     # --- userfields (写入 Grocy 自定义字段) ---
     uf = {}
@@ -331,29 +347,28 @@ def http_get_bytes(url):
         return b""
 
 
-def upload_product_image(img_bytes, ext):
+def upload_product_image(img_bytes, product_id):
     """把图片字节上传到 Grocy 产品图片库, 返回 Grocy 内的文件名(失败返回空串)。"""
     if not img_bytes:
         return ""
-    boundary = "----grocyscanboundary7Q8x"
-    cd = ("Content-Disposition: form-data; name=\"file\"; filename=\"apizero.%s\"\r\n" % ext).encode("utf-8")
-    body = (b"--" + boundary.encode() + b"\r\n") + cd + \
-           b"Content-Type: image/jpeg\r\n\r\n" + img_bytes + b"\r\n" + \
-           (b"--" + boundary.encode() + b"--\r\n")
+    pic_name = "%s.jpg" % product_id
+    b64fn = base64.b64encode(pic_name.encode("ascii")).decode("ascii")
+    boundary = "----grocyscanbd" + str(product_id & 0xFFFFFF)
+    body = (b"--" + boundary.encode() + b"\r\n" +
+        b'Content-Disposition: form-data; name="file"; filename="' + pic_name.encode() + b'"\r\n' +
+        b"Content-Type: image/jpeg\r\n\r\n" + img_bytes +
+        b"\r\n--" + boundary.encode() + b"--\r\n")
     headers = {
         "GROCY-API-KEY": API_KEY,
-        "Content-Type": ("multipart/form-data; boundary=%s" % boundary).encode("utf-8"),
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
     }
-    req = urllib.request.Request(GROCY_URL + "/api/files/productpictures",
-                                 data=body, headers=headers, method="POST")
+    req = urllib.request.Request(GROCY_URL + "/api/files/productpictures/" + b64fn,
+        data=body, headers=headers, method="PUT")
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            j = json.loads(r.read().decode("utf-8"))
-            return j.get("filename") or j.get("file_name") or ""
+        with urllib.request.urlopen(req, timeout=20):
+            return pic_name
     except Exception:
         return ""
-
-
 def create_product(barcode, name, location_id, qu_id, description="", image_url="", userfields=None):
     """直接在 Grocy 建档并绑定条码, 不依赖外部插件。
 
@@ -378,6 +393,17 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
     }
     if description:
         body["description"] = description
+    pg_name = None
+    if userfields and userfields.get("category"):
+        raw_cat = str(userfields["category"])
+        idx_paren = raw_cat.find("(")
+        pg_name = raw_cat[:idx_paren].strip() if idx_paren > 0 else raw_cat.strip()
+        pg_id = _ensure_product_group(pg_name)
+        if pg_id:
+            body["product_group_id"] = pg_id
+    bb_days = _guess_best_before_days(name, (userfields or {}).get("category") or pg_name)
+    if bb_days:
+        body["default_best_before_days"] = bb_days
     st, ct, raw = grocy("POST", "/api/objects/products", body)
     if st not in (200, 201):
         msg = ""
@@ -414,20 +440,67 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
 
     # 自动下载 apizero 图片并上传到 Grocy(失败静默, 不影响建档)
     if image_url:
-        try:
-            ext = (image_url.rsplit(".", 1)[-1].split("?")[0] or "jpg").lower()
-            if ext not in ("jpg", "jpeg", "png", "gif", "webp"):
-                ext = "jpg"
-            img = http_get_bytes(image_url)
-            if img:
-                fname = upload_product_image(img, ext)
-                if fname:
-                    grocy("PUT", "/api/objects/products/%s" % new_id,
-                          {"picture_file_name": fname})
-        except Exception:
-            pass
+        def _try_dl(url):
+            try:
+                ext = (url.rsplit(".", 1)[-1].split("?")[0] or "jpg").lower()
+                if ext not in ("jpg", "jpeg", "png", "gif", "webp"):
+                    ext = "jpg"
+                img = http_get_bytes(url)
+                if img and len(img) > 100:
+                    fname = upload_product_image(img, new_id)
+                    if fname:
+                        grocy("PUT", "/api/objects/products/%s" % new_id,
+                              {"picture_file_name": fname})
+                        return True
+            except Exception:
+                pass
+            return False
+        if not _try_dl(image_url) and "gds.org.cn" in image_url:
+            parts = image_url.split("/")
+            bc_candidate = ""
+            for p in parts:
+                if p.isdigit() and len(p) >= 8:
+                    bc_candidate = p
+                    break
+            if bc_candidate:
+                _try_dl("https://v1.apizero.cn/api/barcode-lookup?mode=image&barcode=" + bc_candidate)
     return new_id, ""
 
+
+def _ensure_product_group(name):
+    """确保产品分组存在, 不存在则创建。从分类配置中查找分组名称。"""
+    if not name:
+        return None
+    # 从配置中查找分组名
+    pg_name = name
+    for cfg_key, cfg_val in CATEGORY_CONFIG.items():
+        if cfg_key == name or (cfg_val.get("product_group") or "") == name:
+            pg_name = cfg_val.get("product_group") or name
+            break
+    try:
+        st, _, raw = grocy("GET", "/api/objects/product_groups")
+        if st == 200:
+            groups = json.loads(raw.decode("utf-8")) or []
+            for g in groups:
+                if (g.get("name") or "").strip().lower() == pg_name.strip().lower():
+                    return g["id"]
+        st2, _, raw2 = grocy("POST", "/api/objects/product_groups", {"name": pg_name})
+        if st2 in (200, 201):
+            j2 = json.loads(raw2.decode("utf-8")) or {}
+            return j2.get("created_object_id")
+    except Exception:
+        pass
+    return None
+
+def _guess_best_before_days(name, category):
+    """从分类配置文件中查找保质期, 未匹配则这4季度默认365天。"""
+    if category and category in CATEGORY_CONFIG:
+        return CATEGORY_CONFIG[category].get("best_before_days", 365)
+    text = (name + " " + (category or "")).lower()
+    for cfg_key, cfg_val in CATEGORY_CONFIG.items():
+        if cfg_key.lower() in text:
+            return cfg_val.get("best_before_days", 365)
+    return 365
 
 def change_stock(product_id, amount, mode, location_id=None):
     if mode == "out":
