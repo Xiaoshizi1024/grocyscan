@@ -1,9 +1,16 @@
 /**
  * Grocy ????????? - ??????
- * ???: 2.2.0 (2026-07-28) - ????? */
+ * ???: 2.3.0 (2026-07-28) - ????? */
 
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.3.0";
 const VERSION_DATE = "2026-07-28";
+
+const sh = (id, p, v) => { const e = document.getElementById(id); if (e && e.style) e.style[p] = v; };
+const st = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = String(v); };
+const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+const si = (id, v) => { const e = document.getElementById(id); if (e) e.innerHTML = v; };
+const ss = (id, v) => { const e = document.getElementById(id); if (e) e.src = v; };
+
 
 const S = {
   mode: "in",
@@ -28,12 +35,14 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 
 const toast = (msg, type="info") => {
-  const el = $("#toast");
-  el.className = "toast " + type;
-  el.textContent = msg;
-  el.style.display = "block";
-  clearTimeout(el._t);
-  el._t = setTimeout(() => { el.style.display = "none"; }, 2500);
+  try {
+    const el = $("#toast");
+    if (!el) return;
+    el.className = "toast " + type + " show";
+    el.textContent = msg;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.className = "toast " + type; }, 2500);
+  } catch(e) {}
 };
 
 const feedback = () => {
@@ -92,34 +101,35 @@ async function handle(code) {
     const d = await r.json();
 
     const preview = document.getElementById("preview");
-    preview.style.display = "block";
+    if (preview) preview.style.display = "block";
 
     if (d.found) {
       S.pending = { product_id: d.product_id, name: d.name, amount: 1, mode: S.mode };
       document.getElementById("pvName").textContent = d.name;
-      document.getElementById("pvNew").style.display = "none";
+      toast("\u626B\u7801\u6210\u529F: " + d.name, "info");
+      sh("pvNew", "display", "none");
       const stk = d.stock_amount != null ? "\u5E93\u5B58: " + d.stock_amount + " " + (d.qu_stock || "") : "";
       document.getElementById("pvStock").textContent = stk;
       if (d.picture_file_name) {
         document.getElementById("pvImg").src = "/api/image?file=" + encodeURIComponent(d.picture_file_name);
       } else {
-        document.getElementById("pvImg").src = "";
+        document.getElementById("pvImg").src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88' fill='%23eef1f4'%3E%3Crect width='88' height='88'/%3E%3Ctext x='44' y='52' text-anchor='middle' font-size='12' fill='%239aa7b4'%3E%E6%97%A0%E5%9B%BE%E7%89%87%3C/text%3E%3C/svg%3E";
       }
       if (d.description) {
-        document.getElementById("pvDesc").style.display = "block";
+        sh("pvDesc", "display", "block");
         document.getElementById("pvDesc").textContent = d.description;
       } else {
-        document.getElementById("pvDesc").style.display = "none";
+        sh("pvDesc", "display", "none");
       }
       // qty area
-      document.getElementById("qtyArea").style.display = "block";
-      document.getElementById("createArea").style.display = "none";
+      sh("qtyArea", "display", "block");
+      sh("createArea", "display", "none");
       const qUnit = document.getElementById("qUnit");
       qUnit.textContent = d.qu_stock || "";
       document.getElementById("qInput").value = 1;
       // mode label
       document.getElementById("pvModeLabel").textContent = (S.mode === "in" ? "\u2190 \u5165\u5e93" : "\u2192 \u51fa\u5e93");
-      document.getElementById("pvModeLabel").style.color = (S.mode === "in" ? "var(--in)" : "var(--out)");
+      sh("pvModeLabel", "color", (S.mode === "in" ? "var(--in)" : "var(--out)"));
       // location selector
       var qloc = document.getElementById("qloc");
       if (qloc) {
@@ -137,11 +147,11 @@ async function handle(code) {
         suggest: d.suggest || {},
       };
       document.getElementById("pvName").textContent = "\u65B0\u5EFA: " + d.barcode;
-      document.getElementById("pvNew").style.display = "inline";
+      sh("pvNew", "display", "inline");
       document.getElementById("pvStock").textContent = "\u5E93\u5185\u65E0\u6B64\u6761\u7801";
-      document.getElementById("pvDesc").style.display = "none";
-      document.getElementById("qtyArea").style.display = "none";
-      document.getElementById("createArea").style.display = "block";
+      sh("pvDesc", "display", "none");
+      sh("qtyArea", "display", "none");
+      sh("createArea", "display", "block");
       const sug = d.suggest || {};
       document.getElementById("cName").value = sug.name || "";
       document.getElementById("cDesc").value = sug.description || "";
@@ -163,26 +173,27 @@ async function handle(code) {
       const cImg = document.getElementById("cImg");
       if (sug.image_url) {
         cImg.src = sug.image_url;
-        cImg.style.display = "block";
+        if (cImg) cImg.style.display = "block";
       } else {
-        cImg.style.display = "none";
+        if (cImg) cImg.style.display = "none";
       }
       document.getElementById("cQty").value = 1;
     } else {
       toast(d.error || "\u67E5\u8BE2\u5931\u8D25", "err");
       document.getElementById("mInput").value = code;
-      preview.style.display = "none";
+      if (preview) preview.style.display = "none";
       S.busy = false;
       return;
     }
   } catch(e) {
-    toast("\u67E5\u8BE2\u5931\u8D25: " + e.message, "err");
+    console.error("[handle] error:", e, e && e.message);
+    try { toast("\u67E5\u8BE2\u5931\u8D25: " + e.message, "err"); } catch(e2) {}
   }
   S.busy = false;
   // auto scroll to preview
   var pv = document.getElementById("preview");
   if (pv && pv.style.display !== "none") {
-    setTimeout(function() { pv.scrollIntoView({ behavior: "smooth", block: "start" }); }, 200);
+    setTimeout(function() { try { pv.scrollIntoView({ behavior: "auto", block: "center" }); } catch(e) {} }, 150);
   }
 }
 
@@ -206,7 +217,7 @@ async function confirmStock() {
     const d = await r.json();
     if (d.ok) {
       addLogItem(S.mode, S.pending.name, amount);
-      toast(S.mode === "in" ? "\u5DF2\u5165\u5E93 \u2713" : "\u5DF2\u51FA\u5E93 \u2713", "ok");
+      toast(S.mode === "in" ? "\u2705 \u5DF2\u5165\u5E93 " + S.pending.name + " \u00D7" + amount : "\u2705 \u5DF2\u51FA\u5E93 " + S.pending.name + " \u00D7" + amount, "ok");
       closePreview();
     } else {
       toast(d.error || "\u64CD\u4F5C\u5931\u8D25", "err");
@@ -382,6 +393,8 @@ function startQuaggaEngine() {
 
     const ps = (Quagga && Quagga.PatchSize) ? (Quagga.PatchSize.medium || 400) : 400;
 
+    document.getElementById("reader").style.display = "block";
+    document.getElementById("scanVideo").style.display = "none";
     function tryInit(workers) {
       Quagga.init({
         inputStream: {
@@ -436,6 +449,8 @@ async function startZXingEngine() {
 
   setEngineBadge("ZXing\u00B7\u542F\u52A8\u4E2D...");
 
+  document.getElementById("reader").style.display = "block";
+  document.getElementById("scanVideo").style.display = "none";
   S.cam = new Html5Qrcode("reader", { verbose: false });
   const cfg = {
     fps: 8,
@@ -489,6 +504,7 @@ async function stopCam() {
   setCamBtnState(false);
   document.getElementById("btnTorch").disabled = true;
   updateTorchBtn();
+
   setEngineBadge("\u672A\u5F00\u542F");
   setCamOffMsg(true);
 }
@@ -529,6 +545,7 @@ async function startCam() {
           return;
         } catch (e) {
           console.warn("[Cam] native failed:", e.message || e);
+          await stopCam();
           if (engineMode === "native") {
             toast("\u539F\u751F\u5F15\u64CE\u4E0D\u53EF\u7528: " + (e && e.message || e), "err");
             setCamOffMsg(true);
@@ -550,6 +567,7 @@ async function startCam() {
         return;
       } catch (e) {
         console.warn("[Cam] Quagga failed:", e.message || e);
+        await stopCam();
         toast("Quagga \u521D\u59CB\u5316\u5931\u8D25, \u56DE\u9000 ZXing", "info");
       }
     }
