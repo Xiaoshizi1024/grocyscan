@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Grocy 手机扫码录入 - 轻量后端 (纯 Python 标准库, 零第三方依赖)
@@ -62,14 +62,27 @@ def parse_details(raw):
     prod = j.get("product") or {}
     if not prod.get("id"):
         return None
+    pid = prod.get("id")
+    uf = {}
+    st_uf, _, raw_uf = grocy("GET", "/api/userfields/products/" + str(pid))
+    if st_uf == 200:
+        try:
+            uf_data = json.loads(raw_uf.decode("utf-8"))
+            if isinstance(uf_data, dict):
+                for k in ("brand", "category", "manufacturer", "net_content", "feature"):
+                    v = uf_data.get(k)
+                    if v is not None and v != "":
+                        uf[k] = str(v)
+        except: pass
     return {
         "found": True,
-        "product_id": prod.get("id"),
+        "product_id": pid,
         "name": prod.get("name", ""),
         "description": prod.get("description", "") or "",
         "picture_file_name": prod.get("picture_file_name", "") or "",
         "stock_amount": j.get("stock_amount", 0),
         "qu_stock": (j.get("quantity_unit_stock") or {}).get("name", ""),
+        "userfields": uf,
     }
 
 
