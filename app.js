@@ -1,9 +1,9 @@
-/**
- * Grocy ????????? - ??????
- * ???: 2.3.0 (2026-07-28) - ????? */
+﻿/**
+ * Grocy 手机扫码录入 - 前端脚本
+ * 版本: 2.3.1 (2026-07-29) 新增持久化位置选择器 */
 
-const APP_VERSION = "2.3.0";
-const VERSION_DATE = "2026-07-28";
+const APP_VERSION = "2.3.1";
+const VERSION_DATE = "2026-07-29";
 
 const sh = (id, p, v) => { const e = document.getElementById(id); if (e && e.style) e.style[p] = v; };
 const st = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = String(v); };
@@ -28,7 +28,9 @@ const S = {
   quaggaInitialized: false,
   torchOn: false,
   engine: "auto",
+  locCache: [],
 };
+const LS_LOC = "grocyscan_loc_id";
 
 const $ = (s) => document.querySelector(s);
 
@@ -76,6 +78,40 @@ const updateTorchBtn = () => {
     btn.textContent = S.torchOn ? "\uD83D\uDD26 \u5173\u706F" : "\uD83D\uDD26 \u5F00\u706F";
   }
 };
+
+async function loadLocations() {
+  try {
+    const r = await fetch("/api/locations");
+    const locs = await r.json();
+    S.locCache = locs;
+    const sel = document.getElementById("locPref");
+    if (!sel) return;
+    sel.innerHTML = "<option value=''>\u4E0D\u6307\u5B9A</option>";
+    locs.forEach(function(l) {
+      const opt = document.createElement("option");
+      opt.value = l.id; opt.textContent = l.name; sel.appendChild(opt);
+    });
+    const saved = localStorage.getItem(LS_LOC);
+    if (saved && locs.some(function(l) { return String(l.id) === saved; })) {
+      sel.value = saved;
+    }
+  } catch(e) {
+    console.warn("loadLocations:", e);
+  }
+}
+
+function autoSelectLocation(selectEl) {
+  if (!selectEl) return;
+  const saved = localStorage.getItem(LS_LOC);
+  if (saved) {
+    for (var i = 0; i < selectEl.options.length; i++) {
+      if (String(selectEl.options[i].value) === saved) {
+        selectEl.selectedIndex = i;
+        return;
+      }
+    }
+  }
+}
 
 async function pollHealth() {
   while (true) {
@@ -144,16 +180,17 @@ async function handle(code) {
       qUnit.textContent = d.qu_stock || "";
       document.getElementById("qInput").value = 1;
       // mode label
-      document.getElementById("pvModeLabel").textContent = (S.mode === "in" ? "\u2190 \u5165\u5e93" : "\u2192 \u51fa\u5e93");
+      document.getElementById("pvModeLabel").textContent = (S.mode === "in" ? "\u2190 \u5165\u5e93" : "\u2192 \u51FA\u5E93");
       sh("pvModeLabel", "color", (S.mode === "in" ? "var(--in)" : "var(--out)"));
       // location selector
       var qloc = document.getElementById("qloc");
       if (qloc) {
-        qloc.innerHTML = "<option value=''>\u4e0d\u6307\u5b9a\u4f4d\u7f6e</option>";
+        qloc.innerHTML = "<option value=''>\u4E0D\u6307\u5B9A\u4F4D\u7F6E</option>";
         (d.locations || []).forEach(function(l) {
           var opt = document.createElement("option");
           opt.value = l.id; opt.textContent = l.name; qloc.appendChild(opt);
         });
+        autoSelectLocation(qloc);
       }
     } else if (d.need_create) {
       S.pending = {
@@ -178,6 +215,7 @@ async function handle(code) {
         const opt = document.createElement("option");
         opt.value = l.id; opt.textContent = l.name; locSel.appendChild(opt);
       });
+      autoSelectLocation(locSel);
       // quantity units
       const quSel = document.getElementById("cQu");
       quSel.innerHTML = "<option value=''>\u8BF7\u9009\u62E9\u5355\u4F4D</option>";
@@ -610,6 +648,15 @@ function closeSettings() {
 
 document.addEventListener("DOMContentLoaded", function () {
   pollHealth();
+  loadLocations();
+
+  document.getElementById("locPref").addEventListener("change", function() {
+    if (this.value) {
+      localStorage.setItem(LS_LOC, this.value);
+    } else {
+      localStorage.removeItem(LS_LOC);
+    }
+  });
 
   document.querySelectorAll("#chipEngine .chip").forEach((b) => {
     b.addEventListener("click", () => {
@@ -695,7 +742,7 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("segMode").classList.toggle("out", S.mode === "out");
       var ml = document.getElementById("pvModeLabel");
       if (ml) {
-        ml.textContent = S.mode === "in" ? "\u2190 \u5165\u5e93" : "\u2192 \u51fa\u5e93";
+        ml.textContent = S.mode === "in" ? "\u2190 \u5165\u5e93" : "\u2192 \u51FA\u5E93";
         ml.style.color = S.mode === "in" ? "var(--in)" : "var(--out)";
       }
     });

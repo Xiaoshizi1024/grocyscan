@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Grocy 鎵嬫満鎵爜褰曞叆 - 杞婚噺鍚庣 (绾?Python 鏍囧噯搴? 闆剁涓夋柟渚濊禆)
-鐗堟湰: V2.01 (2026-07-27)
-  V2.01: 鏂板 userfields 鍐欏叆 (PUT /api/userfields/products/{id}), 鏀寔 brand/category/manufacturer/net_content/feature 鑷畾涔夊瓧娈?鑱岃矗:
-  1. 鎻愪緵 HTTPS (鑷璇佷功) -> 鎵嬫満娴忚鍣ㄦ墠鍏佽寮€鎽勫儚澶?  2. 浠ｇ悊 Grocy API (鏈嶅姟绔敞鍏?GROCY-API-KEY, 閬垮厤娴忚鍣ㄨ法鍩?+ 闅愯棌瀵嗛挜)
-  3. 鏉＄爜鏌ヨ: 鍏堟煡搴撳唴浜у搧, 鏌ヤ笉鍒板垯瑙﹀彂澶栭儴鏉＄爜鎻掍欢(apizero) add=true 鑷姩寤烘。
-  4. apizero 鍟嗗搧瀛楁鍐欏叆 Grocy 鑷畾涔夊瓧娈?(userfields), 涓嶅啀鎷艰繘 description
-鐜鍙橀噺:
-  GROCY_URL       Grocy 鍦板潃, 榛樿 http://172.17.0.1:9283 (docker 缃戝叧鍥炶繛瀹夸富鍙戝竷绔彛)
-  GROCY_API_KEY   Grocy API 瀵嗛挜 (蹇呭～)
-  PORT            鐩戝惉绔彛, 榛樿 9290
+Grocy 手机扫码录入 - 轻量后端 (纯 Python 标准库, 零第三方依赖)
+版本: V2.01 (2026-07-27)
+  V2.01: 新增 userfields 写入 (PUT /api/userfields/products/{id}), 支持 brand/category/manufacturer/net_content/feature 自定义字段
+职责:
+  1. 提供 HTTPS (自签证书) -> 手机浏览器才允许开摄像头
+  2. 代理 Grocy API (服务端注入 GROCY-API-KEY, 避免浏览器跨域 + 隐藏密钥)
+  3. 条码查询: 先查库内产品, 查不到则触发外部条码插件(apizero) add=true 自动建档
+  4. apizero 商品字段写入 Grocy 自定义字段 (userfields), 不再拼进 description
+环境变量:
+  GROCY_URL       Grocy 地址, 默认 http://172.17.0.1:9283 (docker 网关回连宿主发布端口)
+  GROCY_API_KEY   Grocy API 密钥 (必填)
+  PORT            监听端口, 默认 9290
 """
 
 VERSION = "2.01"
@@ -23,13 +25,18 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import re
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from rembg import remove
+try:
+    from rembg import remove
+    HAS_REMBG = True
+except ImportError:
+    HAS_REMBG = False
 
 GROCY_URL = os.environ.get("GROCY_URL", "http://172.17.0.1:9283").rstrip("/")
 API_KEY = os.environ.get("GROCY_API_KEY", "").strip()
 
-# 鍔犺浇浜у搧鍒嗙被閰嶇疆
+# 加载产品分类配置
 CATEGORY_CONFIG = {}
 _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_config.json")
 try:
@@ -42,7 +49,7 @@ PORT = int(os.environ.get("PORT", "9290"))
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 
-# ---------------- Grocy 璇锋眰灏佽 ----------------
+# ---------------- Grocy 请求封装 ----------------
 def grocy(method, path, body=None, want_bytes=False):
     url = GROCY_URL + path
     headers = {"GROCY-API-KEY": API_KEY, "Accept": "application/json"}
@@ -63,7 +70,7 @@ def grocy(method, path, body=None, want_bytes=False):
 
 
 def parse_details(raw):
-    """瑙ｆ瀽 by-barcode 杩斿洖鐨勪骇鍝佽鎯?""
+    """解析 by-barcode 返回的产品详情"""
     try:
         j = json.loads(raw.decode("utf-8"))
     except Exception:
@@ -97,9 +104,12 @@ def parse_details(raw):
 
 
 def ensure_grocy_basics():
-    """Grocy 澶栭儴鏉＄爜鎻掍欢鐨勭‖鎬у墠鎻? 鑷冲皯瀛樺湪涓€涓?浣嶇疆"鍜屼竴涓?鏁伴噺鍗曚綅"銆?    鑻ョ敤鎴峰皻鏈厤缃? 杩欓噷鑷姩寤哄ソ榛樿鍊?榛樿浣嶇疆/涓?, 璁╂壂鐮佸仛鍒伴浂閰嶇疆鍙敤銆?    浠讳綍涓€姝ュけ璐ラ兘闈欓粯蹇界暐 鈥斺€?澶辫触鏃舵彃浠朵細鎶涙竻鏅颁腑鏂囬敊璇彁绀虹敤鎴峰幓閰嶃€?    """
+    """Grocy 外部条码插件的硬性前提: 至少存在一个"位置"和一个"数量单位"。
+    若用户尚未配置, 这里自动建好默认值(默认位置/个), 让扫码做到零配置可用。
+    任何一步失败都静默忽略 —— 失败时插件会抛清晰中文错误提示用户去配。
+    """
     try:
-        # 浣嶇疆
+        # 位置
         st, _, raw = grocy("GET", "/api/objects/locations")
         if st == 200:
             try:
@@ -108,8 +118,8 @@ def ensure_grocy_basics():
                 locs = []
             if len(locs) == 0:
                 grocy("POST", "/api/objects/locations",
-                      {"name": "榛樿浣嶇疆", "description": "鎵爜鑷姩鍒涘缓"})
-        # 鏁伴噺鍗曚綅
+                      {"name": "默认位置", "description": "扫码自动创建"})
+        # 数量单位
         st2, _, raw2 = grocy("GET", "/api/objects/quantity_units")
         if st2 == 200:
             try:
@@ -118,14 +128,15 @@ def ensure_grocy_basics():
                 qus = []
             if len(qus) == 0:
                 grocy("POST", "/api/objects/quantity_units",
-                      {"name": "涓?, "name_plural": "涓?, "description": "鎵爜鑷姩鍒涘缓"})
+                      {"name": "个", "name_plural": "个", "description": "扫码自动创建"})
     except Exception:
         pass
 
 
-# ---------------- apizero 鍟嗗搧淇℃伅锛堝甫浠樿垂 Key 鐩磋繛锛屼笉缁忚繃 Grocy 鎻掍欢锛?---------------
+# ---------------- apizero 商品信息（带付费 Key 直连，不经过 Grocy 插件）----------------
 def load_apizero_key():
-    """浠?鐜鍙橀噺 APIZERO_KEY 鎴?鍚岀洰褰?apizero_key 鏂囦欢 璇诲彇浠樿垂 Key銆?    浼樺厛绾? 鐜鍙橀噺 > 鏂囦欢銆傛枃浠朵负绌?涓嶅瓨鍦ㄥ垯杩斿洖绌哄瓧绗︿覆(姝ゆ椂涓嶈皟 apizero, 閫€鍥炴墜鍔ㄥ～琛?銆?""
+    """从 环境变量 APIZERO_KEY 或 同目录 apizero_key 文件 读取付费 Key。
+    优先级: 环境变量 > 文件。文件为空/不存在则返回空字符串(此时不调 apizero, 退回手动填表)。"""
     k = (os.environ.get("APIZERO_KEY") or "").strip()
     if k:
         return k
@@ -138,16 +149,18 @@ def load_apizero_key():
 
 
 def _parse_apizero(j):
-    """瑙ｆ瀽 apizero 杩斿洖: 鍏煎 PRO 鐗?barcode-gs1, 椤跺眰瀛楁) 涓?鍏嶈垂鐗?barcode-lookup, 鍖呭湪 data 鍐?銆?
-    杩斿洖缁撴瀯鍖栨暟鎹?
-      - name: 浜у搧鍚嶇О
-      - image_url: 浜у搧鍥剧墖 URL
-      - userfields: Grocy 鑷畾涔夊瓧娈垫槧灏?(key-value, 瀵瑰簲 userfields 琛ㄧ殑 name 瀛楁)
-        brand      -> 鍝佺墝
-        category   -> 绫诲埆
-        feature    -> 浜у搧鐗瑰緛 (澶氳鏂囨湰, 鍚鏍?鍑€鍚噺/浜у湴绛?
-        manufacturer -> 鐢熶骇鍟嗗垪琛?        net_content  -> 鍑€鍚噺
-      - description: 澶囩敤鏂囨湰 (鍏煎鏃т唬鐮? 鍚堝苟鍏ㄩ儴淇℃伅)
+    """解析 apizero 返回: 兼容 PRO 版(barcode-gs1, 顶层字段) 与 免费版(barcode-lookup, 包在 data 内)。
+
+    返回结构化数据:
+      - name: 产品名称
+      - image_url: 产品图片 URL
+      - userfields: Grocy 自定义字段映射 (key-value, 对应 userfields 表的 name 字段)
+        brand      -> 品牌
+        category   -> 类别
+        feature    -> 产品特征 (多行文本, 含规格/净含量/产地等)
+        manufacturer -> 生产商列表
+        net_content  -> 净含量
+      - description: 备用文本 (兼容旧代码, 合并全部信息)
     """
     if not isinstance(j, dict):
         return None
@@ -155,18 +168,19 @@ def _parse_apizero(j):
     src = data if data else j
     name = (src.get("name") or j.get("name") or "").strip()
     if not name:
-        return None  # 鏈櫥璁版垨鏃犲悕绉?-> 瑙嗕负鏌ヤ笉鍒?
+        return None  # 未登记或无名称 -> 视为查不到
+
     brand = (src.get("brand") or "").strip()
     cat = (src.get("category") or "").strip()
     mf = (src.get("manufacturer") or "").strip()
-    # 瑙勬牸: gs1 鐢?specification, lookup 鐢?spec
+    # 规格: gs1 用 specification, lookup 用 spec
     spec = (src.get("specification") or src.get("spec") or "").strip()
     net = (src.get("net_content") or "").strip()
     general_name = (src.get("general_name") or "").strip()
     country = (src.get("country") or "").strip()
     price = src.get("price")
     desc_raw = (src.get("description") or "").strip()
-    # 鍒楄〃浠锋牸 (lookup 杩斿洖 number, gs1 杩斿洖 string)
+    # 列表价格 (lookup 返回 number, gs1 返回 string)
     if price is not None and price != "":
         price = str(price)
 
@@ -178,7 +192,7 @@ def _parse_apizero(j):
     elif not img and (src.get("barcode") or j.get("barcode")):
         img = "https://v1.apizero.cn/api/barcode-lookup?mode=image&barcode=" + (src.get("barcode") or j.get("barcode", ""))
 
-    # --- userfields (鍐欏叆 Grocy 鑷畾涔夊瓧娈? ---
+    # --- userfields (写入 Grocy 自定义字段) ---
     uf = {}
     if brand:
         uf["brand"] = brand
@@ -188,37 +202,38 @@ def _parse_apizero(j):
         uf["manufacturer"] = mf
     if net:
         uf["net_content"] = net
-    # feature (浜у搧鐗瑰緛, 澶氳鏂囨湰): 閫氱敤鍚?+ 瑙勬牸 + 鍑€鍚噺 + 浜у湴 + 鍙傝€冧环 + 闄勫姞鎻忚堪
+    # feature (产品特征, 多行文本): 通用名 + 规格 + 净含量 + 产地 + 参考价 + 附加描述
     feat_lines = []
     if general_name:
         feat_lines.append(general_name)
     if spec:
         feat_lines.append(spec)
-    if net and net != spec:  # 閬垮厤涓庝笂闈㈤噸澶?        feat_lines.append("鍑€鍚噺: " + net)
+    if net and net != spec:  # 避免与上面重复
+        feat_lines.append("净含量: " + net)
     if country:
-        feat_lines.append("浜у湴: " + country)
+        feat_lines.append("产地: " + country)
     if price:
-        feat_lines.append("鍙傝€冧环: " + price + " 鍏?)
+        feat_lines.append("参考价: " + price + " 元")
     if desc_raw:
         feat_lines.append(desc_raw)
     if feat_lines:
         uf["feature"] = "\n".join(feat_lines)
 
-    # --- description (澶囩敤, 鍏煎鏃т唬鐮? ---
+    # --- description (备用, 兼容旧代码) ---
     all_parts = []
     if brand:
-        all_parts.append("鍝佺墝: " + brand)
+        all_parts.append("品牌: " + brand)
     if cat:
-        all_parts.append("鍒嗙被: " + cat)
+        all_parts.append("分类: " + cat)
     if mf:
-        all_parts.append("鐢熶骇鍟? " + mf)
+        all_parts.append("生产商: " + mf)
     spec_s = spec or net
     if spec_s:
-        all_parts.append("瑙勬牸: " + spec_s)
+        all_parts.append("规格: " + spec_s)
     if country:
-        all_parts.append("浜у湴: " + country)
+        all_parts.append("产地: " + country)
     if price:
-        all_parts.append("鍙傝€冧环: " + price + " 鍏?)
+        all_parts.append("参考价: " + price + " 元")
     if desc_raw:
         all_parts.append(desc_raw)
 
@@ -231,7 +246,7 @@ def _parse_apizero(j):
 
 
 def apizero_lookup(barcode):
-    """甯︿粯璐?Key 鏌ヨ apizero銆侾RO 鐗堜紭鍏? 澶辫触鍥炶惤鍏嶈垂鐗堛€傛棤 Key 鎴栨煡涓嶅埌杩斿洖 None銆?""
+    """带付费 Key 查询 apizero。PRO 版优先, 失败回落免费版。无 Key 或查不到返回 None。"""
     key = load_apizero_key()
     if not key:
         return None
@@ -255,7 +270,7 @@ def apizero_lookup(barcode):
 
 def lookup(barcode):
     bc = urllib.parse.quote(barcode)
-    # 1) 鍏堟煡搴撳唴
+    # 1) 先查库内
     st, ct, raw = grocy("GET", "/api/stock/products/by-barcode/" + bc)
     if st == 200:
         d = parse_details(raw)
@@ -278,7 +293,10 @@ def lookup(barcode):
             except: pass
             d["quantity_units"] = qus
             return d
-    # 2) 搴撳唴鏃犳鏉＄爜 -> 鐩存帴鎷夊彇 Grocy 宸叉湁浣嶇疆/鏁伴噺鍗曚綅, 璁╁墠绔紩瀵肩敤鎴峰缓妗ｃ€?    #    涓嶅啀璋冪敤澶栭儴 apizero 鎻掍欢: 璇ユ彃浠跺湪 Grocy 宸叉湁浣嶇疆鏃朵粛浼氳鎶?    #    "Grocy 涓繕娌℃湁浠讳綍浣嶇疆"(鍏?$this->locations 娉ㄥ叆涓虹┖), 涓?apizero 鍖垮悕棰濆害宸茶€楀敖銆?    locs = []
+    # 2) 库内无此条码 -> 直接拉取 Grocy 已有位置/数量单位, 让前端引导用户建档。
+    #    不再调用外部 apizero 插件: 该插件在 Grocy 已有位置时仍会误报
+    #    "Grocy 中还没有任何位置"(其 $this->locations 注入为空), 且 apizero 匿名额度已耗尽。
+    locs = []
     st_loc, _, raw_loc = grocy("GET", "/api/objects/locations")
     if st_loc == 200:
         try:
@@ -298,11 +316,11 @@ def lookup(barcode):
             pass
     if not locs:
         return {"found": False, "need_create": False,
-                "error": 'Grocy 涓繕娌℃湁浠讳綍"浣嶇疆"銆傝鍦ㄧ綉椤电 绠＄悊鈫掍綅缃?鑷冲皯娣诲姞涓€涓?濡?鍌ㄨ棌瀹?)锛屾垨绛夋壂鐮佹湇鍔¤嚜鍔ㄥ垱寤洪粯璁や綅缃悗閲嶈瘯'}
+                "error": 'Grocy 中还没有任何"位置"。请在网页端 管理→位置 至少添加一个(如"储藏室")，或等扫码服务自动创建默认位置后重试'}
     if not qus:
         return {"found": False, "need_create": False,
-                "error": 'Grocy 涓繕娌℃湁浠讳綍"鏁伴噺鍗曚綅"銆傝鍦ㄧ綉椤电 绠＄悊鈫掓暟閲忓崟浣?鑷冲皯娣诲姞涓€涓?濡?涓?)锛屾垨绛夋壂鐮佹湇鍔¤嚜鍔ㄥ垱寤洪粯璁ゅ崟浣嶅悗閲嶈瘯'}
-    # 3) 搴撳唴鏃犳鏉＄爜 -> 鐢?apizero 浠樿垂 Key 鐩磋繛鏌ヨ鍟嗗搧淇℃伅(鎴愬姛鍒欓濉埌鏂板缓琛ㄥ崟)
+                "error": 'Grocy 中还没有任何"数量单位"。请在网页端 管理→数量单位 至少添加一个(如"个")，或等扫码服务自动创建默认单位后重试'}
+    # 3) 库内无此条码 -> 用 apizero 付费 Key 直连查询商品信息(成功则预填到新建表单)
     suggest = {}
     try:
         info = apizero_lookup(barcode)
@@ -336,7 +354,7 @@ def http_get_bytes(url):
 
 
 def upload_product_image(img_bytes, product_id):
-    """忙聤聤氓聸戮莽聣聡氓颅聴猫聤聜盲赂聤盲录聽氓聢掳 Grocy 盲潞搂氓聯聛氓聸戮莽聣聡氓潞聯, 猫驴聰氓聸聻 Grocy 氓聠聟莽職聞忙聳聡盲禄露氓聬聧(氓陇卤猫麓楼猫驴聰氓聸聻莽漏潞盲赂虏)茫聙聜"""
+    """æå¾çå­èä¸ä¼ å° Grocy äº§åå¾çåº, è¿å Grocy åçæä»¶å(å¤±è´¥è¿åç©ºä¸²)ã"""
     if not img_bytes:
         return ""
     pic_name = "%s.jpg" % product_id
@@ -353,18 +371,21 @@ def upload_product_image(img_bytes, product_id):
     except Exception:
         return ""
 def create_product(barcode, name, location_id, qu_id, description="", image_url="", userfields=None):
-    """鐩存帴鍦?Grocy 寤烘。骞剁粦瀹氭潯鐮? 涓嶄緷璧栧閮ㄦ彃浠躲€?
-    鍙傛暟:
-      barcode: 鍟嗗搧鏉＄爜
-      name: 浜у搧鍚嶇О
-      location_id: 瀛樻斁浣嶇疆 id
-      qu_id: 鏁伴噺鍗曚綅 id
-      description: 鎻忚堪/瑙勬牸 (澶囩敤瀛楁)
-      image_url: 浜у搧鍥剧墖 URL (鑷姩涓嬭浇涓婁紶)
-      userfields: dict, Grocy 鑷畾涔夊瓧娈垫槧灏?(key=瀛楁鍚? value=鍊?
-        濡?{"brand":"浼婂埄","category":"濂堕叒","manufacturer":"xxx","net_content":"90鍏?,"feature":"..."}
-        Grocy 鑷畾涔夊瓧娈靛瓨鍌ㄥ湪 userfield_values 琛ㄤ腑, 闇€閫氳繃鐙珛绔偣 PUT /api/userfields/products/{id} 鍐欏叆銆?
-    杩斿洖 (product_id, error_msg); 鎴愬姛鏃?error_msg 涓虹┖瀛楃涓层€?    """
+    """直接在 Grocy 建档并绑定条码, 不依赖外部插件。
+
+    参数:
+      barcode: 商品条码
+      name: 产品名称
+      location_id: 存放位置 id
+      qu_id: 数量单位 id
+      description: 描述/规格 (备用字段)
+      image_url: 产品图片 URL (自动下载上传)
+      userfields: dict, Grocy 自定义字段映射 (key=字段名, value=值)
+        如 {"brand":"伊利","category":"奶酪","manufacturer":"xxx","net_content":"90克","feature":"..."}
+        Grocy 自定义字段存储在 userfield_values 表中, 需通过独立端点 PUT /api/userfields/products/{id} 写入。
+
+    返回 (product_id, error_msg); 成功时 error_msg 为空字符串。
+    """
     body = {
         "name": name,
         "location_id": int(location_id),
@@ -391,7 +412,7 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
             msg = (json.loads(raw.decode("utf-8")) or {}).get("error_message", "")
         except Exception:
             msg = raw.decode("utf-8", "ignore")[:200]
-        return None, (msg or ("寤烘。澶辫触 HTTP %s" % st))
+        return None, (msg or ("建档失败 HTTP %s" % st))
     new_id = None
     try:
         j = json.loads(raw.decode("utf-8")) or {}
@@ -399,13 +420,13 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
     except Exception:
         pass
     if not new_id:
-        return None, "寤烘。鎴愬姛浣嗘湭杩斿洖浜у搧ID"
-    # 缁戝畾鏉＄爜鍒拌浜у搧
+        return None, "建档成功但未返回产品ID"
+    # 绑定条码到该产品
     grocy("POST", "/api/objects/product_barcodes",
           {"product_id": new_id, "barcode": barcode, "qu_id": int(qu_id)})
 
-    # 鍐欏叆 userfields (鑷畾涔夊瓧娈? 鈥?闇€閫氳繃鐙珛绔偣 PUT /api/userfields/products/{id}
-    # 鏍煎紡: {"brand":"浼婂埄","category":"濂堕叒"} (key-value, 涓嶆槸 JSON 瀛楃涓?
+    # 写入 userfields (自定义字段) — 需通过独立端点 PUT /api/userfields/products/{id}
+    # 格式: {"brand":"伊利","category":"奶酪"} (key-value, 不是 JSON 字符串)
     if userfields:
         try:
             uf = {}
@@ -416,8 +437,9 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
             if uf:
                 grocy("PUT", "/api/userfields/products/%s" % new_id, uf)
         except Exception:
-            pass  # userfields 鍐欏叆澶辫触涓嶅奖鍝嶅缓妗ｆ垚鍔?
-    # 鑷姩涓嬭浇 apizero 鍥剧墖骞朵笂浼犲埌 Grocy(澶辫触闈欓粯, 涓嶅奖鍝嶅缓妗?
+            pass  # userfields 写入失败不影响建档成功
+
+    # 自动下载 apizero 图片并上传到 Grocy(失败静默, 不影响建档)
     if image_url:
         def _try_dl(url):
             try:
@@ -425,15 +447,26 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
                 if ext not in ("jpg", "jpeg", "png", "gif", "webp"):
                     ext = "jpg"
                 img = http_get_bytes(url)
+                with open("/tmp/img_debug.log", "a") as _d:
+                    _d.write("_try_dl: got %d bytes\n" % len(img))
                 if img and len(img) > 100:
-                    try:
-                        img = remove(img)
-                    except Exception:
-                        pass
+                    if HAS_REMBG:
+                        try:
+                            img = remove(img)
+                            with open("/tmp/img_debug.log", "a") as _d:
+                                _d.write("  after rembg: %d bytes\n" % len(img))
+                        except Exception as e:
+                            with open("/tmp/img_debug.log", "a") as _d:
+                                _d.write("  rembg FAIL: %s\n" % str(e)[:100])
+                    else:
+                        with open("/tmp/img_debug.log", "a") as _d:
+                            _d.write("  rembg not available; using raw image\n")
                     fname = upload_product_image(img, new_id)
                     if fname:
-                        grocy("PUT", "/api/objects/products/%s" % new_id,
+                        st_p, _, _ = grocy("PUT", "/api/objects/products/%s" % new_id,
                               {"picture_file_name": fname})
+                        with open("/tmp/img_debug.log", "a") as _d:
+                            _d.write("  set pfn status=%d\n" % st_p)
                         return True
             except Exception:
                 pass
@@ -451,10 +484,11 @@ def create_product(barcode, name, location_id, qu_id, description="", image_url=
 
 
 def _ensure_product_group(name):
-    """纭繚浜у搧鍒嗙粍瀛樺湪, 涓嶅瓨鍦ㄥ垯鍒涘缓銆備粠鍒嗙被閰嶇疆涓煡鎵惧垎缁勫悕绉般€?""
+    """确保产品分组存在, 不存在则创建。从分类配置中查找分组名称。"""
     if not name:
         return None
-    # 浠庨厤缃腑鏌ユ壘鍒嗙粍鍚?    pg_name = name
+    # 从配置中查找分组名
+    pg_name = name
     for cfg_key, cfg_val in CATEGORY_CONFIG.items():
         if cfg_key == name or (cfg_val.get("product_group") or "") == name:
             pg_name = cfg_val.get("product_group") or name
@@ -475,7 +509,7 @@ def _ensure_product_group(name):
     return None
 
 def _guess_best_before_days(name, category):
-    """浠庡垎绫婚厤缃枃浠朵腑鏌ユ壘淇濊川鏈? 鏈尮閰嶅垯杩?瀛ｅ害榛樿365澶┿€?""
+    """从分类配置文件中查找保质期, 未匹配则这4季度默认365天。"""
     if category and category in CATEGORY_CONFIG:
         return CATEGORY_CONFIG[category].get("best_before_days", 365)
     text = (name + " " + (category or "")).lower()
@@ -504,15 +538,126 @@ def change_stock(product_id, amount, mode, location_id=None):
     return ok, st, msg
 
 
-# ---------------- CORS 閰嶇疆 ----------------
+# 拆包规则: 大包条码 -> (小包条码, 拆出数量)
+# 扫到大包条码时: 出库大包 1 个 + 入库小包 N 个
+SPLIT_RULES = {
+    "6901236384954": {"child_barcode": "6901236343036", "child_amount": 24, "parent_name": "维达纸手帕(大包)", "child_name": "维达纸手帕(小包)"},
+}
+
+
+def do_split(barcode, loc_id):
+    """按拆包规则执行: 出库大包 1 个, 入库小包 N 个。返回 (ok, msg)。"""
+    rule = SPLIT_RULES.get(barcode)
+    if not rule:
+        return None
+    parent = lookup(barcode)
+    if not (parent and parent.get("found")):
+        return False, "大包条码未匹配到库内商品"
+    child = lookup(rule["child_barcode"])
+    if not (child and child.get("found")):
+        return False, "小包条码未匹配到库内商品"
+    ok1, st1, msg1 = change_stock(parent.get("product_id"), 1, "out", loc_id)
+    if not ok1:
+        return False, "大包出库失败: %s" % (msg1 or ("HTTP %s" % st1))
+    ok2, st2, msg2 = change_stock(child.get("product_id"), rule["child_amount"], "in", loc_id)
+    if not ok2:
+        return True, "大包已出库但小包入库失败: %s" % (msg2 or ("HTTP %s" % st2))
+    return True, "拆包完成: 出库%s 1个, 入库%s %s个" % (
+        rule["parent_name"], rule["child_name"], rule["child_amount"])
+
+
+def device_handle(barcode, client, mode):
+    """硬件扫码兼容端点核心逻辑 (GrocyCompanionCN 硬件 → grocyscan)。
+    POST /add(入库) /consume(出库)  body: {"client": 位置名或ID, "aimid": "...", "barcode": "..."}
+    条码在库 → 直接变动库存; 不在库 → 自动建档(apizero预填)后入库/出库。
+    若条码命中拆包规则 → 自动执行拆包(出库大包 + 入库小包)。
+    """
+    barcode = (barcode or "").strip()
+    if not barcode:
+        return {"ok": False, "error": "条码为空"}
+    try:
+        d = lookup(barcode)
+    except Exception as e:
+        return {"ok": False, "error": "查询失败: %s" % e}
+    # 确定位置: client 可为数字ID, 或按名称匹配 Grocy 位置, 匹配不到用第一个
+    locs = d.get("locations") or []
+    loc_id = None
+    cs = (client or "").strip()
+    if cs.isdigit():
+        loc_id = int(cs)
+    elif cs:
+        for l in locs:
+            if str(l.get("name", "")).strip() == cs:
+                loc_id = l.get("id")
+                break
+        if loc_id is None:
+            for l in locs:
+                if cs in str(l.get("name", "")):
+                    loc_id = l.get("id")
+                    break
+    if loc_id is None and locs:
+        loc_id = locs[0].get("id")
+    # 命中拆包规则 → 自动拆包
+    if barcode in SPLIT_RULES:
+        spl = do_split(barcode, loc_id)
+        if spl is not None:
+            ok, msg = spl
+            return {"ok": ok, "split": True, "action": "split",
+                    "message": msg, "error": "" if ok else msg}
+    # 在库 → 直接变动库存
+    if d.get("found"):
+        ok, st, msg = change_stock(d.get("product_id"), 1, mode, loc_id)
+        if ok:
+            return {"ok": True, "product_id": d.get("product_id"), "name": d.get("name", ""),
+                    "action": mode, "message": ("入库: " if mode == "in" else "出库: ") + str(d.get("name", ""))}
+        return {"ok": False, "error": msg or ("Grocy HTTP %s" % st)}
+    # 未在库 → 自动建档
+    if not d.get("need_create"):
+        return {"ok": False, "error": d.get("error") or "条码不存在且无法建档"}
+    sug = d.get("suggest") or {}
+    name = (sug.get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "apizero 未返回商品名称, 无法自动建档, 请先用网页扫码建档"}
+    if not loc_id:
+        return {"ok": False, "error": "未找到可用位置"}
+    qus = d.get("quantity_units") or []
+    qu_id = qus[0].get("id") if qus else None
+    if not qu_id:
+        return {"ok": False, "error": "未找到可用数量单位"}
+    pid, msg = create_product(
+        barcode, name, loc_id, qu_id,
+        description=sug.get("description") or "",
+        image_url=sug.get("image_url") or "",
+        userfields=sug.get("userfields") or {},
+    )
+    if not pid:
+        return {"ok": False, "error": msg}
+    ok, st, msg = change_stock(pid, 1, mode, loc_id)
+    if ok:
+        return {"ok": True, "product_id": pid, "name": name, "action": mode, "created": True,
+                "message": "已建档并" + ("入库: " if mode == "in" else "出库: ") + name}
+    return {"ok": True, "product_id": pid, "name": name, "action": mode, "created": True,
+            "warning": "已建档, 但" + ("入库" if mode == "in" else "出库") + "失败: " + msg}
+
+
+# ---------------- CORS 配置 ----------------
 CORS_ALLOWED_ORIGIN = "*"
 CORS_ALLOWED_METHODS = "GET, POST, OPTIONS, PUT, DELETE"
 CORS_ALLOWED_HEADERS = "Content-Type, GROCY-API-KEY, Authorization"
 
 # ---------------- HTTP Handler ----------------
 class H(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass  # 闈欓粯
+    def log_message(self, fmt, *a):
+        try:
+            with open("/tmp/access.log", "a") as f:
+                f.write("[%s] %s %s %s\n" % (
+                    self.client_address[0],
+                    time.strftime("%m-%d %H:%M:%S"),
+                    self.command,
+                    urllib.parse.urlparse(self.path).path,
+                ))
+        except Exception:
+            pass
 
     def _add_cors(self):
         self.send_header("Access-Control-Allow-Origin", CORS_ALLOWED_ORIGIN)
@@ -564,10 +709,12 @@ class H(BaseHTTPRequestHandler):
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/html5-qrcode.min.js":
             return self._file("html5-qrcode.min.js", "application/javascript; charset=utf-8")
-        # 閫氱敤闈欐€佹枃浠惰矾鐢? 鍏佽 BASE 鐩綍涓嬩换鎰?.js (濡?quagga.min.js 涓撶敤涓€缁寸爜寮曟搸)銆?        # 浠呭尮閰?[A-Za-z0-9_.\-] 鏂囦欢鍚? 鏉滅粷 ../ 鐩綍绌胯秺銆?        if re.match(r"^/[A-Za-z0-9_.\-]+\.js$", path):
+        # 通用静态文件路由: 允许 BASE 目录下任意 .js (如 quagga.min.js 专用一维码引擎)。
+        # 仅匹配 [A-Za-z0-9_.\-] 文件名, 杜绝 ../ 目录穿越。
+        if re.match(r"^/[A-Za-z0-9_.\-]+\.js$", path):
             return self._file(path.lstrip("/"), "application/javascript; charset=utf-8")
         if path == "/cert":
-            # 渚涙墜鏈轰笅杞藉苟瀹夎涓哄彲淇?CA 璇佷功 (瑙ｅ喅 Chrome/Edge 鑷璇佷功绂佹憚鍍忓ご闂)
+            # 供手机下载并安装为可信 CA 证书 (解决 Chrome/Edge 自签证书禁摄像头问题)
             p = os.path.join(BASE, "cert.pem")
             try:
                 with open(p, "rb") as f:
@@ -582,13 +729,13 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if path == "/plugin":
-            # 鍒嗗彂 Grocy 鏉＄爜鏌ヨ鎻掍欢(宸蹭慨澶?BaseBarcodeLookupPlugin 鍛藉悕绌洪棿)
+            # 分发 Grocy 条码查询插件(已修复 BaseBarcodeLookupPlugin 命名空间)
             return self._file("ApiZeroBarcodeLookupPlugin.php", "application/octet-stream")
         if path == "/update":
-            # 鏂囦欢涓婁紶椤?- 鎵嬫満娴忚鍣ㄧ洿鎺ユ洿鏂?index.html 绛夐潤鎬佹枃浠讹紝鍏?SSH
+            # 文件上传页 - 手机浏览器直接更新 index.html 等静态文件，免 SSH
             html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
                     '<meta name="viewport" content="width=device-width,initial-scale=1">'
-                    '<title>鏇存柊鏂囦欢</title>'
+                    '<title>更新文件</title>'
                     '<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:20px;color:#333;}'
                     '.box{border:2px dashed #aaa;border-radius:12px;padding:30px;text-align:center;margin:20px 0;background:#fafafa;}'
                     'input[type=file]{font-size:16px;margin:10px 0;width:100%;}'
@@ -598,13 +745,13 @@ class H(BaseHTTPRequestHandler):
                     '.msg.ok{background:#e8f5e9;color:#2e7d32;display:block;}'
                     '.msg.err{background:#fbe9e7;color:#c62828;display:block;}'
                     'h2{font-size:20px;}</style></head><body>'
-                    '<h2>馃摑 鏇存柊鏂囦欢</h2>'
+                    '<h2>📝 更新文件</h2>'
                     '<form method="POST" action="/update" enctype="multipart/form-data">'
                     '<div class="box">'
-                    '<p>閫夋嫨鏂囦欢涓婁紶锛堣鐩栧悓鍚嶆枃浠讹級</p>'
+                    '<p>选择文件上传（覆盖同名文件）</p>'
                     '<input type="file" name="file" id="f">'
                     '</div>'
-                    '<button type="submit">涓婁紶</button>'
+                    '<button type="submit">上传</button>'
                     '</form>'
                     '<div class="msg" id="r"></div>'
                     '<script>document.querySelector("form").onsubmit=async(e)=>{'
@@ -612,9 +759,9 @@ class H(BaseHTTPRequestHandler):
                     'const r=document.getElementById("r");r.className="msg";'
                     'try{const res=await fetch("/update",{method:"POST",body:fd});'
                     'const j=await res.json();'
-                    'if(j.ok){r.className="msg ok";r.textContent="鉁?"+j.file+" 宸叉洿鏂?("+j.size+" 瀛楄妭)";}'
-                    'else{r.className="msg err";r.textContent="鉁?"+(j.error||"涓婁紶澶辫触");}}'
-                    'catch(err){r.className="msg err";r.textContent="鉁?"+err;}};</script>'
+                    'if(j.ok){r.className="msg ok";r.textContent="✓ "+j.file+" 已更新 ("+j.size+" 字节)";}'
+                    'else{r.className="msg err";r.textContent="✗ "+(j.error||"上传失败");}}'
+                    'catch(err){r.className="msg err";r.textContent="✗ "+err;}};</script>'
                     '</body></html>')
             data = html.encode("utf-8")
             self.send_response(200)
@@ -624,13 +771,23 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if path == "/api/locations":
+            st, _, raw = grocy("GET", "/api/objects/locations")
+            locs = []
+            if st == 200:
+                try:
+                    for l in (json.loads(raw.decode("utf-8")) or []):
+                        if l.get("id"):
+                            locs.append({"id": l["id"], "name": l.get("name", "")})
+                except: pass
+            return self._json(locs)
         if path in ("/health", "/api/health"):
             return self._json({"ok": True, "grocy": GROCY_URL, "key_set": bool(API_KEY),
                                "apizero_on": bool(load_apizero_key()), "version": VERSION})
         if path == "/api/lookup":
             bc = (qs.get("barcode", [""])[0] or "").strip()
             if not bc:
-                return self._json({"found": False, "error": "绌烘潯鐮?}, 400)
+                return self._json({"found": False, "error": "空条码"}, 400)
             return self._json(lookup(bc))
         if path == "/api/image":
             fn = (qs.get("file", [""])[0] or "").strip()
@@ -649,7 +806,8 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(raw)
             return
         if path == "/api/imgproxy":
-            # 浠ｇ悊杩滅▼鍟嗗搧鍥?apizero 绛夊閾?, 閬垮厤鑷 HTTPS 椤电殑娣峰唴瀹规嫤鎴?/ 澶栭摼闃茬洍閾俱€?            url = (qs.get("url", [""])[0] or "").strip()
+            # 代理远程商品图(apizero 等外链), 避免自签 HTTPS 页的混内容拦截 / 外链防盗链。
+            url = (qs.get("url", [""])[0] or "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 self.send_response(400); self._add_cors(); self.end_headers(); return
             try:
@@ -671,11 +829,21 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path in ("/add", "/consume"):
+            # 硬件扫码兼容端点 (GrocyCompanionCN 硬件格式)
+            try:
+                ln = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(ln).decode("utf-8"))
+            except Exception as e:
+                return self._json({"ok": False, "error": "请求体解析失败: " + str(e)}, 400)
+            mode = "in" if u.path == "/add" else "out"
+            res = device_handle(body.get("barcode", ""), body.get("client", ""), mode)
+            return self._json(res, 200 if res.get("ok") else 400)
         if u.path == "/update":
-            # 澶勭悊鏂囦欢涓婁紶 - 瑕嗙洊 BASE 鐩綍涓嬬殑鍚屽悕鏂囦欢(浠呭厑璁稿畨鍏ㄦ枃浠跺悕)
+            # 处理文件上传 - 覆盖 BASE 目录下的同名文件(仅允许安全文件名)
             ct = self.headers.get("Content-Type", "")
             if "multipart/form-data" not in ct:
-                return self._json({"ok": False, "error": "闇€瑕?multipart/form-data"}, 400)
+                return self._json({"ok": False, "error": "需要 multipart/form-data"}, 400)
             ln = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(ln)
             boundary = ct.split("boundary=")[1].encode() if "boundary=" in ct else b""
@@ -692,20 +860,20 @@ class H(BaseHTTPRequestHandler):
                     continue
                 fname = os.path.basename(fname_match.group(1))
                 if not re.match(r'^[A-Za-z0-9_.\-]+$', fname):
-                    return self._json({"ok": False, "error": "鏂囦欢鍚嶄笉鍚堟硶: " + fname}, 400)
+                    return self._json({"ok": False, "error": "文件名不合法: " + fname}, 400)
                 content = part[hdr_end + 4:]
                 if content.endswith(b"\r\n"):
                     content = content[:-2]
                 with open(os.path.join(BASE, fname), "wb") as f:
                     f.write(content)
                 return self._json({"ok": True, "file": fname, "size": len(content)})
-            return self._json({"ok": False, "error": "鏈壘鍒版枃浠?}, 400)
+            return self._json({"ok": False, "error": "未找到文件"}, 400)
         if u.path == "/api/create":
             try:
                 ln = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(ln).decode("utf-8"))
             except Exception as e:
-                return self._json({"ok": False, "error": "璇锋眰浣撹В鏋愬け璐? " + str(e)}, 400)
+                return self._json({"ok": False, "error": "请求体解析失败: " + str(e)}, 400)
             barcode = (body.get("barcode") or "").strip()
             name = (body.get("name") or "").strip()
             desc = (body.get("description") or "").strip()
@@ -720,7 +888,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 qu = 0
             if not barcode or not name or loc <= 0 or qu <= 0:
-                return self._json({"ok": False, "error": "鍙傛暟閿欒(鏉＄爜/鍚嶇О/浣嶇疆/鍗曚綅蹇呭～)"}, 400)
+                return self._json({"ok": False, "error": "参数错误(条码/名称/位置/单位必填)"}, 400)
             pid, msg = create_product(barcode, name, loc, qu, desc, img_url, userfields=uf)
             if pid:
                 return self._json({"ok": True, "product_id": pid, "name": name})
@@ -731,7 +899,7 @@ class H(BaseHTTPRequestHandler):
             ln = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(ln).decode("utf-8"))
         except Exception as e:
-            return self._json({"ok": False, "error": "璇锋眰浣撹В鏋愬け璐? " + str(e)}, 400)
+            return self._json({"ok": False, "error": "请求体解析失败: " + str(e)}, 400)
         pid = body.get("product_id")
         try:
             amount = float(body.get("amount", 1))
@@ -740,7 +908,7 @@ class H(BaseHTTPRequestHandler):
         mode = body.get("mode", "in")
         loc_id = body.get("location_id")
         if not pid or amount <= 0:
-            return self._json({"ok": False, "error": "鍙傛暟閿欒"}, 400)
+            return self._json({"ok": False, "error": "参数错误"}, 400)
         ok, st, msg = change_stock(pid, amount, mode, loc_id)
         return self._json({"ok": ok, "status": st, "error": msg})
 
@@ -750,7 +918,7 @@ def ensure_cert():
     key = os.path.join(BASE, "key.pem")
     if os.path.exists(cert) and os.path.exists(key):
         return cert, key
-    # 鑷姩琛ョ敓鎴?(鑻ュ鍣ㄥ唴鏈?openssl)
+    # 自动补生成 (若容器内有 openssl)
     try:
         subprocess.run(
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key,
@@ -758,14 +926,14 @@ def ensure_cert():
             check=True)
         return cert, key
     except Exception as e:
-        raise SystemExit("缂哄皯 cert.pem/key.pem 涓旀棤娉曠敤 openssl 鐢熸垚: %s" % e)
+        raise SystemExit("缺少 cert.pem/key.pem 且无法用 openssl 生成: %s" % e)
 
 
 def main():
     import threading
 
     if not API_KEY:
-        print("[璀﹀憡] 鏈缃?GROCY_API_KEY, Grocy 鎺ュ彛浼?401銆傝鐢?-e GROCY_API_KEY=... 浼犲叆銆?)
+        print("[警告] 未设置 GROCY_API_KEY, Grocy 接口会 401。请用 -e GROCY_API_KEY=... 传入。")
     cert, key = ensure_cert()
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(certfile=cert, keyfile=key)
@@ -773,12 +941,12 @@ def main():
     # HTTPS server on PORT (9290) - for direct HTTPS access
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), H)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-    print("Grocy 鎵爜褰曞叆宸插惎鍔? https://0.0.0.0:%d  ->  %s" % (PORT, GROCY_URL))
+    print("Grocy 扫码录入已启动: https://0.0.0.0:%d  ->  %s" % (PORT, GROCY_URL))
 
     # HTTP server on PORT+1 (9291) - for ngrok/HTTPS tunnel backends
     HTTP_PORT = PORT + 1
     httpd_plain = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), H)
-    print("Grocy 鎵爜褰曞叆宸插惎鍔? http://0.0.0.0:%d (plain HTTP for ngrok)" % HTTP_PORT)
+    print("Grocy 扫码录入已启动: http://0.0.0.0:%d (plain HTTP for ngrok)" % HTTP_PORT)
 
     # Run both in threads
     def run_https():

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -128,6 +128,10 @@
     background:#1a1a2e;color:#9aa7b4;font-size:14px;text-align:center;z-index:2;gap:10px;}
   .cam-off-msg svg{width:48px;height:48px;opacity:.5;}
   .cam-off-msg span{opacity:.7;}
+
+  .loc-bar{display:flex;gap:8px;margin-bottom:12px;align-items:center;}
+  .loc-bar .lbl{font-size:12px;color:var(--sub);font-weight:600;white-space:nowrap;}
+  .loc-bar select{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;background:#fff;box-sizing:border-box;}
 </style>
 </head>
 <body>
@@ -151,6 +155,11 @@
       <button data-v="each" class="on">逐件</button>
       <button data-v="manual">数量</button>
     </div>
+  </div>
+
+  <div class="loc-bar">
+    <span class="lbl">📍 位置</span>
+    <select id="locPref"><option value="">加载中…</option></select>
   </div>
 
   <div class="card">
@@ -186,7 +195,7 @@
       </div>
     </div>
     <div class="pv-desc" id="pvDesc" style="display:none;"></div>
-    <div class="pv-desc" id="pvUf" style="display:none;margin-top:0;"></div>
+    <div class="pv-desc" id="pvUf" style="display:none;"></div>
 
     <div id="qtyArea" style="display:none;">
       <div class="item-lbl" style="margin:0 0 6px;">
