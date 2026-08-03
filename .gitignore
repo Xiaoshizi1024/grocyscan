@@ -20,6 +20,11 @@ key.pem
 cloudflared*.log
 ngrok*.log
 
+# 审计日志数据（运行时生成，含家庭出入库记录）
+audit_log.csv
+audit_log.jsonl
+location_state.json
+
 # 容器相关
 .docker/
 

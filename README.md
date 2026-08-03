@@ -73,7 +73,9 @@ cloudflared tunnel --url http://localhost:9291
 
 | 文件 | 用途 |
 |---|---|
-| `grocyscan_app.py` | Python 后端（HTTPS + HTTP + Grocy 代理） |
+| `grocyscan_app.py` | Python 后端（旧版，已被 `app.py` 取代） |
+| `app.py` | Python 后端（HTTPS + HTTP + Grocy 代理 + 硬件扫码端点 + 拆包 + 位置切换 + 审计日志） |
+| `audit.py` | 统一操作审计日志模块（每次出入库/建档/拆包/位置切换写 CSV + JSONL） |
 | `app.js` | 前端 JavaScript（扫码引擎 + UI） |
 | `index.html` | 前端页面 |
 | `html5-qrcode.min.js` | ZXing 扫码引擎 |
@@ -89,6 +91,56 @@ cloudflared tunnel --url http://localhost:9291
 ## 更新
 
 通过浏览器访问 `/update` 端点可直接上传文件更新容器内应用，无需 SSH。
+
+## OCR 自动入库 · 记账服务 (grocy-ocr)
+
+把购物平台(多多买菜/淘宝/京东等)的**订单截图、小票图片**扔进一个目录，服务自动 OCR 识别、判断用途并写入：
+
+- **订单/收货类截图** → 解析出商品名+规格+单价 → 自动在 Grocy 建产品(已存在则复用)并按今日日期入库、填写单价
+- **发票/账单/付款类截图** → 只记入 `ledger.csv` 记账流水，不写 Grocy
+
+### 工作流
+
+```
+手机截图 → 上传到 WATCH_DIR (如 /data/watch)
+  → RapidOCR 识别 (中文, ARM 可用)
+  → 规则分类: 含"订单/收货/实付"→入 Grocy; 含"发票/账单/付款"→记账
+  → 解析商品块(名称/规格/单价, 自动恢复被 OCR 拆散的小数点)
+  → 建产品(模糊匹配复用已有产品) + 入库(折算单价) + 记 ledger
+  → 原图归档到 ocr_done / ocr_failed
+```
+
+### 配置(环境变量)
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `GROCY_URL` / `GROCY_API_KEY` | Grocy 地址与密钥 | 同 grocyscan |
+| `WATCH_DIR` | 监听目录 | `/data/watch` |
+| `DONE_DIR` / `FAILED_DIR` | 归档目录 | `/data/ocr_done` / `ocr_failed` |
+| `LEDGER_FILE` | 记账 CSV | `/data/ledger.csv` |
+| `DEFAULT_LOCATION_NAME` | 默认存放位置名 | `厨房` |
+| `KEYWORD_LOCATIONS` | 关键词→位置覆盖，如 `{"水":"客厅"}` | `{}` |
+| `POLL_INTERVAL` | 轮询秒数 | `5` |
+| `DRY_RUN` | `1` 时只解析预览不写入 | `0` |
+
+### 部署 (N1)
+
+```bash
+docker compose up -d --build grocy-ocr
+mkdir -p data/watch data/ocr_done data/ocr_failed
+# 把订单截图复制到 data/watch/ 即可, 容器会自动处理
+```
+
+性能提示: N1 (S905 四核 A53 / 2GB) 单张订单截图约 3~10 秒。图片过大时会自动缩到长边 1500px。
+
+### 本机预览/排错
+
+```bash
+# 不装 Docker 直接跑(需先 pip install rapidocr-onnxruntime)
+python3 grocy_ocr_import.py --file 某订单.png --dry-run
+```
+
+注意: OCR 对名称/价格的识别是启发式的，个别情况可能不准确。处理时会打印商品合计与实付金额的校验警告，发现差异可人工核对后再调整；产品名与已有产品模糊匹配≥0.5 会自动复用，减少重复建档。
 
 ## License
 

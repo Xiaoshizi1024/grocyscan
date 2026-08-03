@@ -6,4 +6,4 @@ COPY . /data/
 
 EXPOSE 9290 9291
 
-CMD ["sh", "-c", "python3 /data/grocyscan_app.py"]
+CMD ["sh", "-c", "python3 /data/app.py"]
